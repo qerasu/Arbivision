@@ -1,5 +1,6 @@
 import os
 import signal
+import subprocess
 import tempfile
 from pathlib import Path
 import time
@@ -64,6 +65,16 @@ def _kill_process_group(pid, signum):
             return False
 
 
+def _stop_project_containers():
+    cmd = "docker compose stop"
+    print(f"running: {cmd}")
+    result = subprocess.run(cmd, shell=True)
+    if result.returncode != 0:
+        print(f"error while running: {cmd}")
+        return False
+    return True
+
+
 def main():
     # load environment only from the shared config path
     _load_env_file(ENV_FILE_PATH)
@@ -97,15 +108,15 @@ def main():
         pid_file.unlink(missing_ok=True)
     else:
         print("pid file not found; no tracked process to stop")
-        print(
-            "safe mode is enabled, so unrelated uvicorn processes and docker containers were not touched"
-        )
+        print("safe mode is enabled, so unrelated uvicorn processes were not touched")
 
     if _is_port_in_use(app_host, app_port_int):
         print(
             f"WARNING: port {app_host}:{app_port_int} is still busy. "
             "I did not kill unknown processes automatically."
         )
+
+    _stop_project_containers()
 
     print("bot was successfully stopped!")
 

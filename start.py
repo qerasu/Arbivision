@@ -3,6 +3,7 @@ import subprocess
 import sys
 import signal
 import tempfile
+import textwrap
 from pathlib import Path
 import time
 import socket
@@ -30,6 +31,39 @@ def _python_exec():
 
 def _pidfile():
     return Path(tempfile.gettempdir()) / 'arbitrage_alert_bot.pid'
+
+
+def _run_alembic_upgrade(python_exec):
+    repo_root = Path(__file__).resolve().parent
+    alembic_ini = repo_root / 'alembic.ini'
+    display_cmd = f'{python_exec} -m alembic -c {alembic_ini} upgrade head'
+    inline_script = textwrap.dedent(
+        f"""
+        import sys
+        from pathlib import Path
+
+        repo_root = Path({str(repo_root)!r}).resolve()
+        sys.path = [p for p in sys.path if Path(p or '.').resolve() != repo_root]
+
+        try:
+            from alembic.config import main as alembic_main
+        except ModuleNotFoundError:
+            print('Alembic is not installed for this Python interpreter.')
+            print(f'Install project dependencies for: {{sys.executable}}')
+            print('Example: python3 -m pip install -r requirements.txt')
+            raise SystemExit(1)
+
+        sys.path.insert(0, str(repo_root))
+        raise SystemExit(alembic_main(argv=['-c', {str(alembic_ini)!r}, 'upgrade', 'head']))
+        """
+    ).strip()
+
+    cmd = [python_exec, '-c', inline_script]
+    print(f"running: {display_cmd}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"error while running: {display_cmd}")
+        sys.exit(result.returncode)
 
 
 def _load_env_file(path):
@@ -115,7 +149,7 @@ def main():
 
     # apply db migrations
     python_exec = _python_exec()
-    run_cmd(f'{python_exec} -m alembic upgrade head')
+    _run_alembic_upgrade(python_exec)
 
     # start uvicorn server in current terminal with reload for dev
     print('starting main server... (press ctrl+c to stop or use stop.py in another terminal)')
