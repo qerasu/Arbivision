@@ -120,7 +120,7 @@ async def on_nav_callback(callback):
                 reply_markup=_build_settings_keyboard(),
             )
 
-    await callback.answer()
+    await _safe_answer_callback(callback)
 
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("tg_edit:"))
@@ -144,7 +144,7 @@ async def on_edit_callback(callback):
         format_setting_prompt(field_name, preferences),
         reply_markup=_build_prompt_keyboard(),
     )
-    await callback.answer()
+    await _safe_answer_callback(callback)
 
 
 @router.message(Command("set"))
@@ -362,6 +362,15 @@ async def _safe_edit_text(callback, text, reply_markup):
         )
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():
+            raise
+
+
+async def _safe_answer_callback(callback):
+    try:
+        await callback.answer()
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        if "query is too old" not in error_text and "query id is invalid" not in error_text:
             raise
 
 

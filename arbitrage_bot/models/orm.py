@@ -41,7 +41,7 @@ class MarketPair(Base):
     market_id_a = Column(Integer, ForeignKey("markets.id"), nullable=False)
     market_id_b = Column(Integer, ForeignKey("markets.id"), nullable=False)
     pair_hash = Column(String, nullable=False, unique=True)
-    status = Column(String, default="candidate", nullable=False)
+    status = Column(String, default="auto_approved", nullable=False)
     match_score = Column(Float, nullable=False)
     match_reason_json = Column(JSON, nullable=True)
     outcome_mapping_json = Column(JSON, nullable=True)

@@ -8,9 +8,9 @@ from arbitrage_bot.models.orm import Settings
 GLOBAL_SETTINGS_KEY = "tg_alert_prefs:global"
 UI_STATE_KEY_PREFIX = "tg_ui_state:"
 DEFAULT_PREFERENCES = {
-    "min_roi_percent": 0.1,
-    "max_capital_usd": 140.0,
-    "max_days_to_close": 30,
+    "min_roi_percent": None,
+    "max_capital_usd": None,
+    "max_days_to_close": None,
 }
 FIELD_LABELS = {
     "min_roi_percent": "Min ROI",
@@ -71,11 +71,7 @@ async def set_global_preference(db_session, field_name, field_value):
 
 
 async def reset_global_preferences(db_session):
-    preferences = {
-        "min_roi_percent": None,
-        "max_capital_usd": None,
-        "max_days_to_close": None,
-    }
+    preferences = default_preferences()
     return await _save_global_preferences(db_session, preferences)
 
 

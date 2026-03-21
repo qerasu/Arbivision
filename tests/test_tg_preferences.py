@@ -32,9 +32,9 @@ class TelegramPreferencesTests(unittest.TestCase):
     def test_default_preferences_use_expected_values(self):
         preferences = default_preferences()
 
-        self.assertEqual(preferences["min_roi_percent"], 0.1)
-        self.assertEqual(preferences["max_capital_usd"], 140.0)
-        self.assertEqual(preferences["max_days_to_close"], 30)
+        self.assertIsNone(preferences["min_roi_percent"])
+        self.assertIsNone(preferences["max_capital_usd"])
+        self.assertIsNone(preferences["max_days_to_close"])
 
 
     def test_filter_reason_blocks_by_min_roi(self):
@@ -121,10 +121,11 @@ class TelegramPreferencesTests(unittest.TestCase):
 
         self.assertIn("Volume\nCurrent: $140.50", text)
 
+
     def test_effective_min_roi_falls_back_to_system_default(self):
         value = effective_min_roi(default_preferences())
 
-        self.assertEqual(value, 0.1)
+        self.assertIsNone(value)
 
 
     def test_effective_min_roi_returns_none_when_filters_are_reset(self):

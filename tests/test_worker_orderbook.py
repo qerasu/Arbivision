@@ -1,9 +1,13 @@
 import unittest
 
-from arbitrage_bot.worker import _extract_asks
+from arbitrage_bot.services.orderbook import OrderbookService
 
 
 class ExtractAsksTests(unittest.TestCase):
+
+
+    def setUp(self):
+        self.service = OrderbookService()
 
 
     def test_extracts_and_sorts_levels_from_plain_asks(self):
@@ -14,7 +18,7 @@ class ExtractAsksTests(unittest.TestCase):
             ]
         }
 
-        result = _extract_asks(orderbook)
+        result = self.service._extract_asks(orderbook)
 
         self.assertEqual(result, [(0.5, 2.0), (0.55, 4.0)])
 
@@ -29,7 +33,7 @@ class ExtractAsksTests(unittest.TestCase):
             }
         }
 
-        result = _extract_asks(orderbook)
+        result = self.service._extract_asks(orderbook)
 
         self.assertEqual(result, [(0.41, 3.0), (0.44, 10.0)])
 
@@ -43,6 +47,6 @@ class ExtractAsksTests(unittest.TestCase):
             ]
         }
 
-        result = _extract_asks(orderbook)
+        result = self.service._extract_asks(orderbook)
 
         self.assertEqual(result, [(0.45, 5.0)])

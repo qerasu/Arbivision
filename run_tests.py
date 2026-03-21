@@ -26,6 +26,8 @@ def main():
         "-s",
         "tests",
     ]
+    if not verbose:
+        cmd.append("-q")
     if not no_buffer:
         cmd.append("-b")
     if verbose:
@@ -33,6 +35,7 @@ def main():
 
     result = subprocess.run(cmd, env=env)
     raise SystemExit(result.returncode)
+
 
 if __name__ == "__main__":
     main()

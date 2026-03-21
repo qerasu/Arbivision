@@ -27,17 +27,6 @@ class FakeDbSession:
         return FakeResult(self.rows)
 
 
-class FakeRedis:
-
-
-    def __init__(self):
-        self.setex_calls = []
-
-
-    async def setex(self, key, ttl, value):
-        self.setex_calls.append((key, ttl, value))
-
-
 class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
@@ -70,17 +59,13 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
                 (200, "predict_fun", "pf-200"),
             ]
         )
-        redis = FakeRedis()
-
-        with patch("arbitrage_bot.services.orderbook.get_redis", return_value=redis):
-            result = await service.fetch_orderbooks_for_pairs([pair], db)
+        result = await service.fetch_orderbooks_for_pairs([pair], db)
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["poly_market_id"], "poly-100")
         self.assertEqual(result[0]["pf_market_id"], "pf-200")
         service.predict_fun.fetch_orderbook.assert_awaited_once_with("pf-200")
         service.polymarket.fetch_books.assert_awaited_once_with(["poly-yes", "poly-no"])
-        self.assertEqual(len(redis.setex_calls), 1)
 
 
     async def test_builds_directional_books_from_mapping(self):

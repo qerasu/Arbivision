@@ -29,7 +29,7 @@ class MatcherServiceTests(unittest.TestCase):
 
 
     def setUp(self):
-        self.matcher = MatcherService(db_session=None)
+        self.matcher = MatcherService()
 
 
     def test_auto_approves_close_match(self):
@@ -37,11 +37,13 @@ class MatcherServiceTests(unittest.TestCase):
             id=10,
             title="Will Bitcoin price exceed 100k in 2026",
             outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
         )
         pf_market = SimpleNamespace(
             id=20,
             title="Bitcoin price exceed 100k in 2026",
             outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
         )
 
         pair = self.matcher.match_candidates(poly_market, pf_market)
@@ -53,58 +55,242 @@ class MatcherServiceTests(unittest.TestCase):
             pair.outcome_mapping_json,
             {
                 "market_a": {"yes": "poly-y", "no": "poly-n"},
-                "market_b": {"yes": "pf-y", "no": "pf-n"},
+                "market_a": {"yes": "poly-y", "no": "poly-n", "yes_label": "Yes", "no_label": "No"},
+                "market_b": {"yes": "pf-y", "no": "pf-n", "yes_label": "Yes", "no_label": "No"},
                 "is_inverted": False,
                 "confidence": "high",
             },
         )
 
 
-    def test_rejects_markets_with_different_numbers(self):
-        poly_market = SimpleNamespace(id=10, title="Will Bitcoin price exceed 100k in 2026", outcomes_json=[])
-        pf_market = SimpleNamespace(id=20, title="Will Bitcoin price exceed 90k in 2026", outcomes_json=[])
+    def test_auto_approves_direct_condition_match_with_non_binary_labels(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Memphis Grizzlies vs Charlotte Hornets",
+            outcomes_json=[{"id": "poly-a", "label": "Grizzlies"}, {"id": "poly-b", "label": "Hornets"}],
+            raw_payload_json={"conditionId": "cond-1"},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Grizzlies vs. Hornets",
+            outcomes_json=[{"id": "pf-a", "label": "Grizzlies"}, {"id": "pf-b", "label": "Hornets"}],
+            raw_payload_json={"polymarketConditionIds": ["cond-1"]},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.status, "auto_approved")
+        self.assertEqual(pair.match_score, 1.0)
+        self.assertEqual(
+            pair.outcome_mapping_json,
+            {
+                "market_a": {"yes": "poly-a", "no": "poly-b", "yes_label": "Grizzlies", "no_label": "Hornets"},
+                "market_b": {"yes": "pf-a", "no": "pf-b", "yes_label": "Grizzlies", "no_label": "Hornets"},
+                "is_inverted": False,
+                "confidence": "medium",
+            },
+        )
+
+
+    def test_matches_team_event_when_titles_are_not_identical(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Memphis Grizzlies vs Charlotte Hornets",
+            outcomes_json=[
+                {"id": "poly-a", "label": "Memphis Grizzlies"},
+                {"id": "poly-b", "label": "Charlotte Hornets"},
+            ],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Grizzlies vs. Hornets",
+            outcomes_json=[
+                {"id": "pf-a", "label": "Grizzlies"},
+                {"id": "pf-b", "label": "Hornets"},
+            ],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.status, "auto_approved")
+        self.assertGreaterEqual(pair.match_score, 0.8)
+        self.assertEqual(
+            pair.outcome_mapping_json,
+            {
+                "market_a": {
+                    "yes": "poly-a",
+                    "no": "poly-b",
+                    "yes_label": "Memphis Grizzlies",
+                    "no_label": "Charlotte Hornets",
+                },
+                "market_b": {
+                    "yes": "pf-a",
+                    "no": "pf-b",
+                    "yes_label": "Grizzlies",
+                    "no_label": "Hornets",
+                },
+                "is_inverted": False,
+                "confidence": "high",
+            },
+        )
+
+
+    def test_matches_binary_head_to_head_market_against_named_matchup(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will Memphis Grizzlies beat Charlotte Hornets?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Grizzlies vs. Hornets",
+            outcomes_json=[
+                {"id": "pf-a", "label": "Grizzlies"},
+                {"id": "pf-b", "label": "Hornets"},
+            ],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.status, "auto_approved")
+        self.assertEqual(
+            pair.outcome_mapping_json,
+            {
+                "market_a": {"yes": "poly-y", "no": "poly-n", "yes_label": "Yes", "no_label": "No"},
+                "market_b": {"yes": "pf-a", "no": "pf-b", "yes_label": "Grizzlies", "no_label": "Hornets"},
+                "is_inverted": False,
+                "confidence": "medium",
+            },
+        )
+
+
+    def test_matches_named_matchup_against_binary_head_to_head_market(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Memphis Grizzlies vs Charlotte Hornets",
+            outcomes_json=[
+                {"id": "poly-a", "label": "Memphis Grizzlies"},
+                {"id": "poly-b", "label": "Charlotte Hornets"},
+            ],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will Grizzlies beat Hornets?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.status, "auto_approved")
+        self.assertEqual(
+            pair.outcome_mapping_json,
+            {
+                "market_a": {
+                    "yes": "poly-a",
+                    "no": "poly-b",
+                    "yes_label": "Memphis Grizzlies",
+                    "no_label": "Charlotte Hornets",
+                },
+                "market_b": {"yes": "pf-y", "no": "pf-n", "yes_label": "Yes", "no_label": "No"},
+                "is_inverted": False,
+                "confidence": "medium",
+            },
+        )
+
+
+    def test_rejects_matchup_against_single_team_future(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will the Memphis Grizzlies win the NBA Western Conference Finals?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Grizzlies vs. Hornets",
+            outcomes_json=[
+                {"id": "pf-a", "label": "Grizzlies"},
+                {"id": "pf-b", "label": "Hornets"},
+            ],
+            raw_payload_json={},
+        )
 
         pair = self.matcher.match_candidates(poly_market, pf_market)
 
         self.assertIsNone(pair)
 
 
-    def test_marks_partial_match_for_manual_review(self):
-        poly_market = SimpleNamespace(id=10, title="Will Bitcoin exceed 100k in 2026", outcomes_json=[])
-        pf_market = SimpleNamespace(id=20, title="Bitcoin exceed 100k 2026 today", outcomes_json=[])
+    def test_rejects_markets_with_different_numbers(self):
+        poly_market = SimpleNamespace(id=10, title="Will Bitcoin price exceed 100k in 2026", outcomes_json=[], raw_payload_json={})
+        pf_market = SimpleNamespace(id=20, title="Will Bitcoin price exceed 90k in 2026", outcomes_json=[], raw_payload_json={})
 
         pair = self.matcher.match_candidates(poly_market, pf_market)
 
-        self.assertIsNotNone(pair)
-        self.assertEqual(pair.status, "manual_review")
-        self.assertGreaterEqual(pair.match_score, 0.65)
-        self.assertLess(pair.match_score, 0.85)
+        self.assertIsNone(pair)
 
 
-    def test_keeps_high_score_but_non_identical_token_set_for_manual_review(self):
+    def test_rejects_partial_match_without_auto_approval(self):
+        poly_market = SimpleNamespace(id=10, title="Will Bitcoin exceed 100k in 2026", outcomes_json=[], raw_payload_json={})
+        pf_market = SimpleNamespace(id=20, title="Bitcoin exceed 100k 2026 today", outcomes_json=[], raw_payload_json={})
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)
+
+
+    def test_rejects_high_score_match_without_full_auto_approval_signal(self):
         poly_market = SimpleNamespace(
             id=10,
             title="Will Bitcoin price exceed 100k in 2026",
             outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
         )
         pf_market = SimpleNamespace(
             id=20,
             title="Bitcoin price exceed 100k in 2026 today",
             outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
         )
 
         pair = self.matcher.match_candidates(poly_market, pf_market)
 
-        self.assertIsNotNone(pair)
-        self.assertEqual(pair.status, "manual_review")
+        self.assertIsNone(pair)
 
 
-    def test_downgrades_high_score_to_manual_review_when_outcome_mapping_is_missing(self):
-        poly_market = SimpleNamespace(id=10, title="Will Bitcoin price exceed 100k in 2026", outcomes_json=[])
-        pf_market = SimpleNamespace(id=20, title="Bitcoin price exceed 100k in 2026", outcomes_json=[])
+    def test_rejects_high_score_match_when_outcome_mapping_is_missing(self):
+        poly_market = SimpleNamespace(id=10, title="Will Bitcoin price exceed 100k in 2026", outcomes_json=[], raw_payload_json={})
+        pf_market = SimpleNamespace(id=20, title="Bitcoin price exceed 100k in 2026", outcomes_json=[], raw_payload_json={})
 
         pair = self.matcher.match_candidates(poly_market, pf_market)
 
-        self.assertIsNotNone(pair)
-        self.assertEqual(pair.status, "manual_review")
-        self.assertIsNone(pair.outcome_mapping_json)
+        self.assertIsNone(pair)
+
+
+    def test_explain_match_reports_rejection_reason_for_number_mismatch(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will Bitcoin price exceed 100k in 2026",
+            outcomes_json=[],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will Bitcoin price exceed 90k in 2026",
+            outcomes_json=[],
+            raw_payload_json={},
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "number_mismatch")

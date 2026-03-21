@@ -194,8 +194,16 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(redis.setex_calls, [])
 
 
-    async def test_skips_alert_when_roi_is_below_minimum(self):
+    async def test_skips_alert_when_global_min_roi_blocks_it(self):
         db = FakeDbSession()
+        db.global_preferences = OrmSettings(
+            key="tg_alert_prefs:global",
+            value_json={
+                "min_roi_percent": 1.0,
+                "max_capital_usd": None,
+                "max_days_to_close": None,
+            },
+        )
         redis = FakeRedis()
         manager = AlertManager(db)
         pair = SimpleNamespace(id=7, pair_hash="pair-123", market_id_a=101, market_id_b=202)
@@ -318,9 +326,9 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
                     market_a=market_a,
                     market_b=market_b,
                     preferences={
-                        "min_roi_percent": 0.1,
-                        "max_capital_usd": 140.0,
-                        "max_days_to_close": 30,
+                        "min_roi_percent": None,
+                        "max_capital_usd": None,
+                        "max_days_to_close": None,
                     },
                 )
         finally:

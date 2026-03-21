@@ -1,7 +1,7 @@
 import redis.asyncio as aioredis
 from arbitrage_bot.core.config import settings
 
-# Initialize a global redis connection pool
+# initialize a global redis connection pool
 redis_client = aioredis.from_url(
     settings.redis_url,
     encoding="utf-8",

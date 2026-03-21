@@ -32,7 +32,7 @@ async def run_sync_loop():
 
 async def _run_cycle(db):
     ingestion = IngestionService(db)
-    matcher = MatcherService(db)
+    matcher = MatcherService()
     orderbook_service = OrderbookService()
     calculator = ArbitrageCalculator()
     alert_manager = AlertManager(db)
@@ -62,8 +62,14 @@ async def _upsert_market_pairs(db, matcher):
     pf_index = matcher.build_candidate_index(pf_markets)
     matched_pairs = {}
     for poly_market in poly_markets:
-        for pf_market in _candidate_markets_for_poly(poly_market, matcher, pf_index, pf_markets):
-            pair = matcher.match_candidates(poly_market, pf_market)
+        poly_signature = matcher.build_market_signature(poly_market)
+        for pf_signature in _candidate_markets_for_poly(poly_signature, matcher, pf_index):
+            pair = matcher.match_candidates(
+                poly_market,
+                pf_signature["market"],
+                poly_signature=poly_signature,
+                pf_signature=pf_signature,
+            )
             if pair:
                 matched_pairs[pair.pair_hash] = pair
             if settings.MAX_MARKET_PAIRS_PER_LOOP and len(matched_pairs) >= settings.MAX_MARKET_PAIRS_PER_LOOP:
@@ -141,7 +147,7 @@ def _refresh_existing_pair(existing_pair, matched_pair):
 
 def _mark_stale_pairs(pairs):
     changed = False
-    active_statuses = {"candidate", "manual_review", "auto_approved", "approved"}
+    active_statuses = {"auto_approved", "approved"}
 
     for pair in pairs:
         if pair.status in active_statuses and pair.status != "stale":
@@ -188,93 +194,46 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
                 await send_system_error_notification("worker", f"process opportunity pair {pair.id}", e)
 
 
-def _extract_asks(orderbook_data):
-    if not isinstance(orderbook_data, dict):
-        return []
+def _candidate_markets_for_poly(poly_signature, matcher, pf_index):
+    direct_matches = []
+    seen_direct_ids = set()
 
-    asks = (
-        orderbook_data.get("asks")
-        or orderbook_data.get("sell")
-        or orderbook_data.get("sell_orders")
-        or []
-    )
+    for condition_id in poly_signature.get("condition_ids", []):
+        for pf_signature in pf_index.get("condition_ids", {}).get(condition_id, []):
+            market = pf_signature["market"]
+            if market.id in seen_direct_ids:
+                continue
+            seen_direct_ids.add(market.id)
+            direct_matches.append(pf_signature)
 
-    if not asks and isinstance(orderbook_data.get("orderbook"), dict):
-        asks = (
-            orderbook_data["orderbook"].get("asks")
-            or orderbook_data["orderbook"].get("sell")
-            or orderbook_data["orderbook"].get("sell_orders")
-            or []
-        )
+    if direct_matches:
+        return direct_matches
 
-    levels = []
-    if isinstance(asks, dict):
-        asks = [(price, size) for price, size in asks.items()]
-
-    for level in asks:
-        parsed = _extract_level(level)
-        if parsed:
-            levels.append(parsed)
-
-    return sorted(levels, key=lambda item: item[0])
-
-
-def _extract_level(level):
-    if isinstance(level, dict):
-        price = level.get("price", None)
-        if price is None:
-            price = level.get("p", None)
-        if price is None:
-            price = level.get("rate", None)
-
-        size = level.get("size", None)
-        if size is None:
-            size = level.get("s", None)
-        if size is None:
-            size = level.get("quantity", None)
-        if size is None:
-            size = level.get("qty", None)
-
-        if price is None or size is None:
-            return None
-
-        try:
-            return float(price), float(size)
-        except (TypeError, ValueError):
-            return None
-
-    if isinstance(level, (list, tuple)) and len(level) >= 2:
-        try:
-            return float(level[0]), float(level[1])
-        except (TypeError, ValueError):
-            return None
-
-    return None
-
-
-def _candidate_markets_for_poly(poly_market, matcher, pf_index, fallback_markets):
-    signature = matcher.build_market_signature(poly_market)
     candidates_by_id = {}
     shared_token_count = defaultdict(int)
 
-    for token in signature["tokens"]:
-        for pf_signature in pf_index.get(token, []):
+    for token in poly_signature["tokens"]:
+        for pf_signature in pf_index.get("tokens", {}).get(token, []):
             market = pf_signature["market"]
-            candidates_by_id[market.id] = market
+            candidates_by_id[market.id] = pf_signature
             shared_token_count[market.id] += 1
 
     if not candidates_by_id:
-        return fallback_markets
+        return []
 
     ranked_candidates = sorted(
         candidates_by_id.values(),
-        key=lambda market: (
-            shared_token_count[market.id],
-            len(getattr(market, "title", "")),
+        key=lambda pf_signature: (
+            matcher.candidate_rank_score(
+                poly_signature,
+                pf_signature,
+                shared_token_count[pf_signature["market"].id],
+            ),
+            len(getattr(pf_signature["market"], "title", "")),
         ),
         reverse=True,
     )
-    return ranked_candidates
+    return ranked_candidates[:matcher.max_ranked_candidates]
 
 
 async def _load_market_map_for_pairs(db, pairs):

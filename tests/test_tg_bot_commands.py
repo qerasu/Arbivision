@@ -8,15 +8,18 @@ from unittest.mock import patch
 from aiogram.exceptions import TelegramBadRequest
 from arbitrage_bot.tg_bot.bot import _build_bot_commands
 from arbitrage_bot.tg_bot.bot import _format_alert_message
+from arbitrage_bot.tg_bot.bot import _is_missing_table_error
 from arbitrage_bot.tg_bot.handlers import _build_home_keyboard
 from arbitrage_bot.tg_bot.handlers import _build_settings_keyboard
 from arbitrage_bot.tg_bot.handlers import _build_status_keyboard
 from arbitrage_bot.tg_bot.handlers import _apply_setting_update
+from arbitrage_bot.tg_bot.handlers import _safe_answer_callback
 from arbitrage_bot.tg_bot.handlers import _safe_edit_text
 from arbitrage_bot.tg_bot.handlers import cmd_status
 from arbitrage_bot.tg_bot.handlers import cmd_reset
 from arbitrage_bot.tg_bot.handlers import _parse_set_command
 from arbitrage_bot.tg_bot.preferences import format_status_text
+from sqlalchemy.exc import ProgrammingError
 
 
 class TelegramBotCommandsTests(unittest.TestCase):
@@ -80,6 +83,22 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertEqual(commands[3].command, "reset")
 
 
+    def test_is_missing_table_error_detects_undefined_table(self):
+        orig = Exception('relation "alerts" does not exist')
+        orig.sqlstate = "42P01"
+        exc = ProgrammingError("SELECT * FROM alerts", {}, orig)
+
+        self.assertTrue(_is_missing_table_error(exc))
+
+
+    def test_is_missing_table_error_ignores_other_programming_errors(self):
+        orig = Exception("syntax error")
+        orig.sqlstate = "42601"
+        exc = ProgrammingError("bad sql", {}, orig)
+
+        self.assertFalse(_is_missing_table_error(exc))
+
+
     def test_format_alert_message_uses_compact_card_layout(self):
         opportunity = SimpleNamespace(
             direction="A_no_B_yes",
@@ -124,12 +143,53 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("Predict.Fun: https://predict.fun/market/pf-123", text)
 
 
+    def test_format_alert_message_uses_outcome_labels_from_mapping(self):
+        opportunity = SimpleNamespace(
+            direction="A_yes_B_no",
+            net_profit=7.0,
+            net_roi=0.14,
+            capital_required=43.0,
+            shares=50.0,
+            avg_price_leg_1=0.36,
+            avg_price_leg_2=0.50,
+        )
+        pair = SimpleNamespace(
+            match_score=1.0,
+            outcome_mapping_json={
+                "market_a": {"yes_label": "Grizzlies", "no_label": "Hornets"},
+                "market_b": {"yes_label": "Grizzlies", "no_label": "Hornets"},
+            },
+        )
+        market_a = SimpleNamespace(
+            platform="polymarket",
+            title="Grizzlies vs Hornets",
+            slug="grizzlies-vs-hornets",
+            raw_payload_json={"endDate": "2026-03-28T00:00:00+00:00"},
+        )
+        market_b = SimpleNamespace(
+            platform="predict_fun",
+            title="Grizzlies vs. Hornets",
+            slug="",
+            platform_market_id="pf-123",
+            raw_payload_json={"resolveDate": "2026-03-27T00:00:00+00:00"},
+        )
+
+        with patch(
+            "arbitrage_bot.tg_bot.bot.datetime",
+        ) as datetime_mock:
+            datetime_mock.now.return_value = datetime(2026, 3, 21, tzinfo=timezone.utc)
+            text = _format_alert_message(opportunity, pair, market_a, market_b)
+
+        self.assertIn("• Grizzlies on Polymarket @ $0.360 = $18", text)
+        self.assertIn("• Hornets on Predict.Fun @ $0.500 = $25", text)
+
+
     def test_format_status_text_contains_status_summary(self):
         text = format_status_text(
             {
-                "min_roi_percent": 0.1,
-                "max_capital_usd": 140.0,
-                "max_days_to_close": 30,
+                "min_roi_percent": None,
+                "max_capital_usd": None,
+                "max_days_to_close": None,
             }
         )
 
@@ -196,9 +256,9 @@ class TelegramBotStatusCommandTests(unittest.IsolatedAsyncioTestCase):
             "arbitrage_bot.tg_bot.handlers.get_global_preferences",
             new=AsyncMock(
                 return_value={
-                    "min_roi_percent": 0.1,
-                    "max_capital_usd": 140.0,
-                    "max_days_to_close": 30,
+                    "min_roi_percent": None,
+                    "max_capital_usd": None,
+                    "max_days_to_close": None,
                 }
             ),
         ), patch(
@@ -236,8 +296,8 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(
                 return_value={
                     "min_roi_percent": 1.5,
-                    "max_capital_usd": 140.0,
-                    "max_days_to_close": 30,
+                    "max_capital_usd": None,
+                    "max_days_to_close": None,
                 }
             ),
         ), patch(
@@ -277,8 +337,8 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(
                 return_value={
                     "min_roi_percent": 1.5,
-                    "max_capital_usd": 140.0,
-                    "max_days_to_close": 30,
+                    "max_capital_usd": None,
+                    "max_days_to_close": None,
                 }
             ),
         ), patch(
@@ -311,3 +371,30 @@ class TelegramBotCallbackTests(unittest.IsolatedAsyncioTestCase):
             "same text",
             reply_markup=None,
         )
+
+
+    async def test_safe_answer_callback_ignores_expired_query(self):
+        callback = SimpleNamespace(
+            answer=AsyncMock(
+                side_effect=TelegramBadRequest(
+                    method="answerCallbackQuery",
+                    message="Bad Request: query is too old and response timeout expired or query ID is invalid",
+                )
+            )
+        )
+
+        await _safe_answer_callback(callback)
+
+
+    async def test_safe_answer_callback_raises_for_other_errors(self):
+        callback = SimpleNamespace(
+            answer=AsyncMock(
+                side_effect=TelegramBadRequest(
+                    method="answerCallbackQuery",
+                    message="Bad Request: chat not found",
+                )
+            )
+        )
+
+        with self.assertRaises(TelegramBadRequest):
+            await _safe_answer_callback(callback)

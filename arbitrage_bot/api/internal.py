@@ -7,6 +7,7 @@ from arbitrage_bot.models.orm import Alert
 from arbitrage_bot.models.orm import ArbOpportunity
 from arbitrage_bot.models.orm import Market
 from arbitrage_bot.models.orm import MarketPair
+from arbitrage_bot.services.matcher import MatcherService
 
 router = APIRouter()
 
@@ -67,7 +68,7 @@ async def status_check(db=Depends(get_db)):
 
 @router.get("/admin/pairs")
 async def get_pairs(
-    status="manual_review",
+    status="auto_approved",
     db=Depends(get_db),
     _=Depends(require_admin_token),
 ):
@@ -104,3 +105,92 @@ async def approve_pair(pair_id, db=Depends(get_db), _=Depends(require_admin_toke
         return {"status": "success", "pair_id": pair_id}
 
     return {"status": "not_found"}
+
+
+@router.get("/admin/matcher/debug")
+async def debug_matcher(
+    market_id: int,
+    limit: int = 10,
+    db=Depends(get_db),
+    _=Depends(require_admin_token),
+):
+    source_stmt = select(Market).where(Market.id == market_id)
+    source_result = await db.execute(source_stmt)
+    source_market = source_result.scalars().first()
+
+    if source_market is None:
+        return {"status": "not_found", "market_id": market_id}
+
+    target_platform = "predict_fun" if source_market.platform == "polymarket" else "polymarket"
+    candidate_stmt = select(Market).where(
+        Market.platform == target_platform,
+        Market.status == "active",
+    )
+    candidate_result = await db.execute(candidate_stmt)
+    candidate_markets = candidate_result.scalars().all()
+
+    matcher = MatcherService()
+    source_signature = matcher.build_market_signature(source_market)
+    debug_items = []
+
+    for candidate_market in candidate_markets:
+        candidate_signature = matcher.build_market_signature(candidate_market)
+        shared_token_count = len(source_signature["tokens"].intersection(candidate_signature["tokens"]))
+        rank_score = matcher.candidate_rank_score(
+            source_signature,
+            candidate_signature,
+            shared_token_count,
+        )
+
+        if source_market.platform == "polymarket":
+            decision = matcher.explain_match(
+                source_market,
+                candidate_market,
+                poly_signature=source_signature,
+                pf_signature=candidate_signature,
+            )
+        else:
+            decision = matcher.explain_match(
+                candidate_market,
+                source_market,
+                poly_signature=candidate_signature,
+                pf_signature=source_signature,
+            )
+
+        debug_items.append(
+            {
+                "market_id": candidate_market.id,
+                "platform": candidate_market.platform,
+                "platform_market_id": candidate_market.platform_market_id,
+                "title": candidate_market.title,
+                "rank_score": round(rank_score, 4),
+                "shared_token_count": shared_token_count,
+                "matched": decision["matched"],
+                "match_score": round(decision["score"], 4),
+                "reject_reason": decision["reason"]["reject_reason"],
+                "match_reason_json": decision["reason"],
+            }
+        )
+
+    safe_limit = max(1, min(int(limit), 25))
+    ranked_items = sorted(
+        debug_items,
+        key=lambda item: (
+            item["rank_score"],
+            item["match_score"],
+            item["shared_token_count"],
+            item["market_id"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "status": "ok",
+        "source_market": {
+            "id": source_market.id,
+            "platform": source_market.platform,
+            "platform_market_id": source_market.platform_market_id,
+            "title": source_market.title,
+        },
+        "data": ranked_items[:safe_limit],
+    }

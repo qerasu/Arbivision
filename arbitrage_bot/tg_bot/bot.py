@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.types import MenuButtonCommands
 from sqlalchemy import select
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import aliased
 
 from arbitrage_bot.core.config import settings
@@ -45,7 +46,7 @@ async def _configure_bot_ui(bot):
 
 
 def _format_alert_message(opportunity, pair, market_a, market_b):
-    direction = _describe_direction(opportunity.direction)
+    direction = _describe_direction(opportunity.direction, pair)
     title = market_a.title or market_b.title or "Arbitrage Opportunity"
     profit = _format_money(opportunity.net_profit)
     spread = f"{opportunity.net_roi * 100:.2f}%"
@@ -69,15 +70,19 @@ def _format_alert_message(opportunity, pair, market_a, market_b):
     )
 
 
-def _describe_direction(direction):
+def _describe_direction(direction, pair=None):
+    mapping = getattr(pair, "outcome_mapping_json", None) or {}
+    market_a = mapping.get("market_a") or {}
+    market_b = mapping.get("market_b") or {}
+
     mapping = {
         "A_yes_B_no": {
-            "leg_1_label": "YES",
-            "leg_2_label": "NO",
+            "leg_1_label": market_a.get("yes_label") or "YES",
+            "leg_2_label": market_b.get("no_label") or "NO",
         },
         "A_no_B_yes": {
-            "leg_1_label": "NO",
-            "leg_2_label": "YES",
+            "leg_1_label": market_a.get("no_label") or "NO",
+            "leg_2_label": market_b.get("yes_label") or "YES",
         },
     }
 
@@ -160,6 +165,18 @@ def _format_shares(value):
     return f"{rounded:.2f}"
 
 
+def _is_missing_table_error(exc):
+    if not isinstance(exc, ProgrammingError):
+        return False
+
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    if sqlstate == "42P01":
+        return True
+
+    details = format_error_details(exc).lower()
+    return "does not exist" in details and "relation" in details
+
+
 async def _drain_queued_alerts(bot):
     market_b = aliased(Market)
 
@@ -199,6 +216,10 @@ async def _drain_queued_alerts(bot):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if _is_missing_table_error(exc):
+                print("telegram alert loop is waiting for database migrations")
+                await asyncio.sleep(settings.TELEGRAM_ALERTS_POLL_SECONDS)
+                continue
             print(f"telegram alert loop error: {format_error_details(exc)}")
             await send_system_error_notification("telegram", "alert loop", exc)
 

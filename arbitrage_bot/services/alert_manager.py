@@ -28,8 +28,6 @@ class AlertManager:
         )
         if filter_reason:
             return False
-        if calc_result["net_roi"] < settings.MIN_ROI_PERCENT / 100.0:
-            return False
 
         direction = calc_result["direction"]
         redis = await get_redis()

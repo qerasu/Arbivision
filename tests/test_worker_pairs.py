@@ -1,7 +1,8 @@
 import unittest
 from types import SimpleNamespace
 
-from arbitrage_bot.worker import _mark_stale_pairs, _reconcile_market_pairs
+from arbitrage_bot.services.matcher import MatcherService
+from arbitrage_bot.worker import _candidate_markets_for_poly, _mark_stale_pairs, _reconcile_market_pairs
 
 
 class WorkerPairLifecycleTests(unittest.TestCase):
@@ -55,8 +56,8 @@ class WorkerPairLifecycleTests(unittest.TestCase):
     def test_reconcile_creates_new_pairs(self):
         matched_pair = SimpleNamespace(
             pair_hash="pair-2",
-            status="manual_review",
-            match_score=0.67,
+            status="auto_approved",
+            match_score=0.91,
             match_reason_json={"title": "new"},
             outcome_mapping_json={"market_a": {"yes": "poly-y", "no": "poly-n"}},
         )
@@ -78,3 +79,49 @@ class WorkerPairLifecycleTests(unittest.TestCase):
         self.assertEqual(stale_pair.status, "stale")
         self.assertEqual(approved_pair.status, "stale")
         self.assertEqual(failed_pair.status, "failed")
+
+
+    def test_candidate_markets_for_poly_limits_ranked_candidates(self):
+        matcher = MatcherService()
+        matcher.max_ranked_candidates = 2
+        poly_market = SimpleNamespace(
+            id=1,
+            title="Alpha Beta Gamma",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="sports",
+        )
+        pf_markets = [
+            SimpleNamespace(id=10, title="Alpha Beta One", outcomes_json=[], raw_payload_json={}, category="sports"),
+            SimpleNamespace(id=11, title="Alpha Beta Two", outcomes_json=[], raw_payload_json={}, category="sports"),
+            SimpleNamespace(id=12, title="Alpha Beta Three", outcomes_json=[], raw_payload_json={}, category="sports"),
+        ]
+
+        pf_index = matcher.build_candidate_index(pf_markets)
+        poly_signature = matcher.build_market_signature(poly_market)
+
+        candidates = _candidate_markets_for_poly(poly_signature, matcher, pf_index)
+
+        self.assertEqual(len(candidates), 2)
+
+
+    def test_candidate_markets_for_poly_uses_coarse_ranking_signals(self):
+        matcher = MatcherService()
+        poly_market = SimpleNamespace(
+            id=1,
+            title="Grizzlies vs Hornets March 15 2026",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="nba",
+        )
+        pf_markets = [
+            SimpleNamespace(id=10, title="Grizzlies vs Hornets March 15 2026", outcomes_json=[], raw_payload_json={}, category="nba"),
+            SimpleNamespace(id=11, title="Grizzlies vs Hornets", outcomes_json=[], raw_payload_json={}, category="politics"),
+        ]
+
+        pf_index = matcher.build_candidate_index(pf_markets)
+        poly_signature = matcher.build_market_signature(poly_market)
+
+        candidates = _candidate_markets_for_poly(poly_signature, matcher, pf_index)
+
+        self.assertEqual(candidates[0]["market"].id, 10)

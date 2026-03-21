@@ -76,9 +76,43 @@ def _wait_for_tcp_ready(host, port, timeout=20):
     return False
 
 
+def _wait_for_postgres_ready(db_user, db_name, timeout=30):
+    deadline = time.time() + timeout
+    cmd = [
+        'docker',
+        'compose',
+        'exec',
+        '-T',
+        'db',
+        'pg_isready',
+        '-U',
+        db_user,
+        '-d',
+        db_name,
+    ]
+
+    while time.time() < deadline:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return True
+        time.sleep(0.5)
+
+    return False
+
+
 def _run_alembic_upgrade_with_retry(python_exec, db_host, db_port, retries=5):
     if not _wait_for_tcp_ready(db_host, db_port):
         print(f"database is not ready on {db_host}:{db_port}")
+        sys.exit(1)
+
+    db_user = os.environ.get("POSTGRES_USER", "arb_user")
+    db_name = os.environ.get("POSTGRES_DB", "arbitrage_db")
+    if not _wait_for_postgres_ready(db_user, db_name):
+        print(f"postgres is not ready for {db_user}@{db_name}")
         sys.exit(1)
 
     for attempt in range(1, retries + 1):

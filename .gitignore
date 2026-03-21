@@ -9,6 +9,5 @@ env/
 .ruff_cache/
 .coverage
 /logs/
-/archive/
 AGENTS.md
 *.DS_store

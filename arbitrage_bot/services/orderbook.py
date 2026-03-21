@@ -1,6 +1,4 @@
 import asyncio
-import json
-from arbitrage_bot.core.redis import get_redis
 from arbitrage_bot.adapters.polymarket import PolymarketAdapter
 from arbitrage_bot.adapters.predict_fun import PredictFunAdapter
 from arbitrage_bot.models.orm import Market
@@ -40,13 +38,11 @@ class OrderbookService:
                     "platform_market_id": platform_market_id,
                 }
 
-        redis = await get_redis()
         semaphore = asyncio.Semaphore(self._pair_fetch_concurrency)
         tasks = [
             self._fetch_pair_orderbooks(
                 pair,
                 market_id_map,
-                redis,
                 semaphore,
             )
             for pair in market_pairs
@@ -55,7 +51,7 @@ class OrderbookService:
         return [item for item in results if item is not None]
 
 
-    async def _fetch_pair_orderbooks(self, pair, market_id_map, redis, semaphore):
+    async def _fetch_pair_orderbooks(self, pair, market_id_map, semaphore):
         async with semaphore:
             poly_platform_id, pf_platform_id = self._resolve_platform_market_ids(pair, market_id_map)
 
@@ -82,9 +78,6 @@ class OrderbookService:
                     )
                 )
                 return None
-
-            pf_key = f"ob:predict_fun:{pf_platform_id}"
-            await redis.setex(pf_key, 60, json.dumps(pf_ob))
 
             directions = await self._build_direction_books(pair, pf_ob)
             if not directions:
