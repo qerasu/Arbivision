@@ -15,6 +15,8 @@ def _python_exec():
 def main():
     env = os.environ.copy()
     env["PYTHONPYCACHEPREFIX"] = "/tmp/arbivision-pyc"
+    verbose = any(arg in {"-v", "--verbose"} for arg in sys.argv[1:])
+    no_buffer = any(arg == "--no-buffer" for arg in sys.argv[1:])
 
     cmd = [
         _python_exec(),
@@ -23,8 +25,11 @@ def main():
         "discover",
         "-s",
         "tests",
-        "-v",
     ]
+    if not no_buffer:
+        cmd.append("-b")
+    if verbose:
+        cmd.append("-v")
 
     result = subprocess.run(cmd, env=env)
     raise SystemExit(result.returncode)
