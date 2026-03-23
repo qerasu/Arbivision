@@ -3,7 +3,6 @@ import re
 
 class NormalizerService:
 
-
     def normalize_text(self, text):
         if not text:
             return ""
@@ -28,3 +27,14 @@ class NormalizerService:
             "dates": dates,
             "numbers": numbers
         }
+
+
+    def normalize_outcome_label(self, value):
+        normalized = str(value or "").strip().lower()
+        if normalized in {"yes", "y"}:
+            return "yes"
+        if normalized in {"no", "n"}:
+            return "no"
+        if normalized in {"draw", "tie"}:
+            return "draw"
+        return normalized

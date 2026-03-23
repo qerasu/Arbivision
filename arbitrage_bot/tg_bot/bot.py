@@ -1,9 +1,11 @@
 import asyncio
+import html
 import math
 from datetime import datetime
 from datetime import timezone
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
+from aiogram.types import LinkPreviewOptions
 from aiogram.types import MenuButtonCommands
 from sqlalchemy import select
 from sqlalchemy.exc import ProgrammingError
@@ -11,10 +13,13 @@ from sqlalchemy.orm import aliased
 
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.database import AsyncSessionLocal
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.models.orm import Alert, ArbOpportunity, Market, MarketPair
 from arbitrage_bot.services.system_notifier import format_error_details, send_system_error_notification
 from arbitrage_bot.tg_bot import handlers
 from arbitrage_bot.tg_bot.preferences import extract_pair_close_datetime
+
+log = get_logger("tg_bot")
 
 
 def setup_bot():
@@ -28,15 +33,15 @@ def setup_bot():
     dp = Dispatcher()
 
     dp.include_router(handlers.router)
+
     return bot, dp
 
 
 def _build_bot_commands():
     return [
-        BotCommand(command="start", description="open the main screen"),
+        BotCommand(command="start", description="open menu"),
         BotCommand(command="status", description="show current bot status"),
         BotCommand(command="settings", description="open global alert settings"),
-        BotCommand(command="reset", description="reset filters"),
     ]
 
 
@@ -47,7 +52,7 @@ async def _configure_bot_ui(bot):
 
 def _format_alert_message(opportunity, pair, market_a, market_b):
     direction = _describe_direction(opportunity.direction, pair)
-    title = market_a.title or market_b.title or "Arbitrage Opportunity"
+    title = html.escape(market_a.title or market_b.title or "ARBITRAGE OPPORTUNITY")
     profit = _format_money(opportunity.net_profit)
     spread = f"{opportunity.net_roi * 100:.2f}%"
     capital = _format_money(opportunity.capital_required)
@@ -98,7 +103,7 @@ def _describe_direction(direction, pair=None):
 def _format_expiry_line(market_a, market_b):
     close_at = extract_pair_close_datetime(market_a, market_b)
     if close_at is None:
-        return "⏳ Expires: Unknown"
+        return "⏳ Max market end: Unknown"
 
     if close_at.tzinfo is None:
         close_at = close_at.replace(tzinfo=timezone.utc)
@@ -108,21 +113,21 @@ def _format_expiry_line(market_a, market_b):
         0,
         math.ceil((close_at - now).total_seconds() / 86400),
     )
-    return f"⏳ Expires: {close_at.date().isoformat()} ({remaining_days} days)"
+    return f"⏳ Max market end: {close_at.date().isoformat()} ({remaining_days} days)"
 
 
 def _format_market_links(market_a, market_b):
-    labels = []
+    parts = []
 
     for market in (market_a, market_b):
         platform_label = "Polymarket" if market.platform == "polymarket" else "Predict.Fun"
         url = _build_market_url(market)
         if url:
-            labels.append(f"{platform_label}: {url}")
+            parts.append(f'<a href="{url}">{platform_label}</a>')
         else:
-            labels.append(f"{platform_label}: unavailable")
+            parts.append(platform_label)
 
-    return "\n".join(labels)
+    return " | ".join(parts)
 
 
 def _build_market_url(market):
@@ -135,8 +140,12 @@ def _build_market_url(market):
         if value:
             return str(value)
 
+    # slug is already a full url in some cases
+    if slug.startswith("http://") or slug.startswith("https://"):
+        return slug
+
     if platform == "polymarket" and slug:
-        return f"https://polymarket.com/event/{slug}"
+        return f"https://polymarket.com/market/{slug}"
 
     if platform == "predict_fun":
         if slug:
@@ -178,17 +187,17 @@ def _is_missing_table_error(exc):
 
 
 async def _drain_queued_alerts(bot):
-    market_b = aliased(Market)
+    market_b_alias = aliased(Market)
 
     while True:
         try:
             async with AsyncSessionLocal() as session:
                 stmt = (
-                    select(Alert, ArbOpportunity, MarketPair, Market, market_b)
+                    select(Alert, ArbOpportunity, MarketPair, Market, market_b_alias)
                     .join(ArbOpportunity, Alert.opportunity_id == ArbOpportunity.id)
                     .join(MarketPair, ArbOpportunity.market_pair_id == MarketPair.id)
                     .join(Market, MarketPair.market_id_a == Market.id)
-                    .join(market_b, MarketPair.market_id_b == market_b.id)
+                    .join(market_b_alias, MarketPair.market_id_b == market_b_alias.id)
                     .where(Alert.status == "queued")
                     .order_by(Alert.id)
                     .limit(20)
@@ -206,8 +215,11 @@ async def _drain_queued_alerts(bot):
                                 market_a,
                                 market_b_row,
                             ),
+                            parse_mode="HTML",
+                            link_preview_options=LinkPreviewOptions(is_disabled=True),
                         )
                         alert.status = "sent"
+                        alert.sent_at = datetime.now(timezone.utc)
                         alert.error_message = None
                     except Exception as exc:
                         alert.status = "failed"
@@ -217,34 +229,45 @@ async def _drain_queued_alerts(bot):
             raise
         except Exception as exc:
             if _is_missing_table_error(exc):
-                print("telegram alert loop is waiting for database migrations")
+                log.info("waiting for database migrations")
                 await asyncio.sleep(settings.TELEGRAM_ALERTS_POLL_SECONDS)
                 continue
-            print(f"telegram alert loop error: {format_error_details(exc)}")
+            log.error("alert loop error", error=format_error_details(exc))
             await send_system_error_notification("telegram", "alert loop", exc)
 
         await asyncio.sleep(settings.TELEGRAM_ALERTS_POLL_SECONDS)
 
 
 async def start_polling():
-    bot, dp = setup_bot()
-    if not bot or not dp:
-        return
+    while True:
+        try:
+            bot, dp = setup_bot()
+            if not bot or not dp:
+                return
 
-    sender_task = asyncio.create_task(_drain_queued_alerts(bot))
-    try:
-        await bot.delete_webhook(drop_pending_updates=False)
-        await _configure_bot_ui(bot)
-        await dp.start_polling(bot)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        print(f"telegram polling failed: {format_error_details(exc)}")
-        await send_system_error_notification("telegram", "start polling", exc)
-    finally:
-        sender_task.cancel()
-        await asyncio.gather(sender_task, return_exceptions=True)
-        await bot.session.close()
+            sender_task = asyncio.create_task(_drain_queued_alerts(bot))
+            try:
+                await bot.delete_webhook(drop_pending_updates=False)
+                await _configure_bot_ui(bot)
+                await dp.start_polling(bot)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.error("polling failed", error=format_error_details(exc))
+                try:
+                    await send_system_error_notification("telegram", "start polling", exc)
+                except Exception:
+                    pass
+            finally:
+                sender_task.cancel()
+                await asyncio.gather(sender_task, return_exceptions=True)
+                await bot.session.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error("fatal error in polling loop", error=format_error_details(e))
+
+        await asyncio.sleep(5)
 
 
 if __name__ == "__main__":

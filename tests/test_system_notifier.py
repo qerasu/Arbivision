@@ -27,6 +27,7 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         system_notifier._last_sent_at.clear()
+        system_notifier._shared_bot = None
         self.original_token = settings.TELEGRAM_BOT_TOKEN
         self.original_default_chat_ids = settings.TELEGRAM_DEFAULT_CHAT_IDS
         self.original_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
@@ -44,13 +45,13 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
         settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = self.original_error_chat_ids
         settings.TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS = self.original_cooldown
         system_notifier._last_sent_at.clear()
+        system_notifier._shared_bot = None
 
 
     async def test_sends_system_error_message_to_telegram(self):
         fake_bot = AsyncMock()
-        fake_bot.session.close = AsyncMock()
 
-        with patch("arbitrage_bot.services.system_notifier.Bot", return_value=fake_bot):
+        with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot):
             sent = await system_notifier.send_system_error_notification(
                 "polymarket",
                 "markets sync",
@@ -65,14 +66,12 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source: polymarket", kwargs["text"])
         self.assertIn("operation: markets sync", kwargs["text"])
         self.assertIn("details: boom", kwargs["text"])
-        fake_bot.session.close.assert_awaited_once()
 
 
     async def test_skips_duplicate_error_during_cooldown(self):
         fake_bot = AsyncMock()
-        fake_bot.session.close = AsyncMock()
 
-        with patch("arbitrage_bot.services.system_notifier.Bot", return_value=fake_bot):
+        with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot):
             first = await system_notifier.send_system_error_notification(
                 "worker",
                 "sync loop",
@@ -91,14 +90,13 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_strips_httpx_reference_link_from_details(self):
         fake_bot = AsyncMock()
-        fake_bot.session.close = AsyncMock()
 
         error = RuntimeError(
             "Client error '400 Bad Request' for url 'https://api.example.com/test'\n"
             "For more information check: https://example.com/docs/400"
         )
 
-        with patch("arbitrage_bot.services.system_notifier.Bot", return_value=fake_bot):
+        with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot):
             sent = await system_notifier.send_system_error_notification(
                 "predict.fun",
                 "markets sync",

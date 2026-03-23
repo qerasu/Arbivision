@@ -1,34 +1,12 @@
 import os
 from pathlib import Path
 
+from arbitrage_bot.core.env_loader import load_env_file
+
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
 
 
-def _load_env_file(path):
-    if not os.path.exists(path):
-        return
-
-    with open(path, "r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            if "=" not in line:
-                # ignore malformed lines in env file to avoid startup failures
-                continue
-
-            key, val = line.split("=", 1)
-            key = key.strip().removeprefix("export ").strip()
-            val = val.strip()
-
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-
-            if key:
-                os.environ[key] = val
-
-_load_env_file(os.path.expanduser(str(ENV_FILE_PATH)))
+load_env_file(os.path.expanduser(str(ENV_FILE_PATH)))
 
 
 def _get_int_setting(name, default):
@@ -78,12 +56,12 @@ class Settings:
 
     FEE_POLYMARKET_BPS = _get_float_setting("FEE_POLYMARKET_BPS", 0.0)
     FEE_PREDICT_FUN_BPS = _get_float_setting("FEE_PREDICT_FUN_BPS", 0.0)
-    MIN_PROFIT_USD = _get_float_setting("MIN_PROFIT_USD", 5.0)
-    MIN_ROI_PERCENT = _get_float_setting("MIN_ROI_PERCENT", 0.1)
+    MIN_PROFIT_USD = _get_float_setting("MIN_PROFIT_USD", 0.0)
+    MIN_ROI_PERCENT = _get_float_setting("MIN_ROI_PERCENT", 0.0)
     ALERTS_DEDUPE_TTL_SECONDS = _get_int_setting("ALERTS_DEDUPE_TTL_SECONDS", 600)
     ALERTS_DELTA_PROFIT_THRESHOLD_USD = _get_float_setting("ALERTS_DELTA_PROFIT_THRESHOLD_USD", 3.0)
     ALERTS_DELTA_ROI_THRESHOLD_PERCENT = _get_float_setting("ALERTS_DELTA_ROI_THRESHOLD_PERCENT", 0.5)
-    MAX_MARKET_PAIRS_PER_LOOP = _get_int_setting("MAX_MARKET_PAIRS_PER_LOOP", 200)
+    MAX_MARKET_PAIRS_PER_LOOP = _get_int_setting("MAX_MARKET_PAIRS_PER_LOOP", 0)
 
     MARKET_REFRESH_SECONDS = _get_int_setting("MARKET_REFRESH_SECONDS", 15)
     FALLBACK_ORDERBOOK_POLL_SECONDS = _get_int_setting("FALLBACK_ORDERBOOK_POLL_SECONDS", 5)
@@ -91,10 +69,9 @@ class Settings:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_DEFAULT_CHAT_IDS = _get_list_setting("TELEGRAM_DEFAULT_CHAT_IDS", [])
     TELEGRAM_SYSTEM_ERROR_CHAT_IDS = _get_list_setting("TELEGRAM_SYSTEM_ERROR_CHAT_IDS", [])
-    TELEGRAM_ALERTS_POLL_SECONDS = _get_float_setting("TELEGRAM_ALERTS_POLL_SECONDS", 2.0)
+    TELEGRAM_ALERTS_POLL_SECONDS = _get_float_setting("TELEGRAM_ALERTS_POLL_SECONDS", 0.5)
     TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS = _get_float_setting("TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS", 300.0)
     ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "")
-
 
     @property
     def database_url(self):
@@ -104,5 +81,6 @@ class Settings:
     @property
     def redis_url(self):
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
 
 settings = Settings()

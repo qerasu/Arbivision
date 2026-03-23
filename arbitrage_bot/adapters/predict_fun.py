@@ -9,8 +9,13 @@ from arbitrage_bot.adapters.base import BaseAdapter
 class PredictFunAdapter(BaseAdapter):
     base_url = "https://api.predict.fun/v1"
     page_limit = 100
-    max_pages = 5
-    recent_start_id = 70000
+    max_pages = 100
+    recent_start_id = None
+    fallback_errors = (
+        httpx.ConnectError,
+        httpx.ReadTimeout,
+        httpx.RemoteProtocolError,
+    )
 
 
     def __init__(self):
@@ -19,7 +24,14 @@ class PredictFunAdapter(BaseAdapter):
         if settings.PREDICT_FUN_API_KEY:
             headers["x-api-key"] = settings.PREDICT_FUN_API_KEY
         self.headers = headers
-        self.client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0, headers=headers)
+        limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout,
+            headers=headers,
+            limits=limits,
+        )
 
 
     async def close(self):
@@ -68,7 +80,7 @@ class PredictFunAdapter(BaseAdapter):
             response = await self.client.get(path, params=params)
             response.raise_for_status()
             return response.json()
-        except httpx.ConnectError as exc:
+        except self.fallback_errors as exc:
             return await self._curl_get_json(path, params=params, original_exc=exc)
 
 

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock
 
+import httpx
 from arbitrage_bot.adapters.polymarket import PolymarketAdapter
 from arbitrage_bot.adapters.predict_fun import PredictFunAdapter
 
@@ -42,6 +43,17 @@ class PolymarketAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, [{"id": "1"}, {"id": "2"}])
         self.assertEqual(adapter._get_json.await_count, 2)
+
+
+    async def test_get_json_uses_curl_fallback_for_remote_protocol_error(self):
+        adapter = PolymarketAdapter()
+        adapter.client.get = AsyncMock(side_effect=httpx.RemoteProtocolError("boom"))
+        adapter._curl_get_json = AsyncMock(return_value={"data": []})
+
+        result = await adapter._get_json("/markets", params={"limit": 1})
+
+        self.assertEqual(result, {"data": []})
+        adapter._curl_get_json.assert_awaited_once()
 
 
 class PredictFunAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -103,4 +115,15 @@ class PredictFunAdapterTests(unittest.IsolatedAsyncioTestCase):
         await adapter.fetch_markets()
 
         first_call = adapter._get_json.await_args_list[0]
-        self.assertEqual(first_call.kwargs["params"]["after"], adapter._encode_cursor(adapter.recent_start_id))
+        self.assertNotIn("after", first_call.kwargs["params"])
+
+
+    async def test_get_json_uses_curl_fallback_for_read_timeout(self):
+        adapter = PredictFunAdapter()
+        adapter.client.get = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
+        adapter._curl_get_json = AsyncMock(return_value={"data": []})
+
+        result = await adapter._get_json("/markets", params={"first": 1})
+
+        self.assertEqual(result, {"data": []})
+        adapter._curl_get_json.assert_awaited_once()

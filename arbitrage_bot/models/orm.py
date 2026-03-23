@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, JSON, ForeignKey, Text, UniqueConstraint
 
@@ -22,8 +22,8 @@ class Market(Base):
     raw_payload_json = Column(JSON, nullable=False)
     category = Column(String, nullable=True)
     slug = Column(String, nullable=True)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class MarketEntity(Base):
@@ -32,7 +32,7 @@ class MarketEntity(Base):
     market_id = Column(Integer, ForeignKey("markets.id"), nullable=False)
     entity_type = Column(String, nullable=False)
     entity_value = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class MarketPair(Base):
@@ -45,7 +45,7 @@ class MarketPair(Base):
     match_score = Column(Float, nullable=False)
     match_reason_json = Column(JSON, nullable=True)
     outcome_mapping_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class ArbOpportunity(Base):
@@ -64,7 +64,7 @@ class ArbOpportunity(Base):
     gross_roi = Column(Float, nullable=False)
     net_roi = Column(Float, nullable=False)
     calculation_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class Alert(Base):
@@ -76,15 +76,15 @@ class Alert(Base):
     status = Column(String, default="queued", nullable=False)
     sent_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
-class Settings(Base):
+class SettingsRecord(Base):
     __tablename__ = "settings"
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String, nullable=False, unique=True)
     value_json = Column(JSON, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class BlacklistRule(Base):
@@ -93,4 +93,4 @@ class BlacklistRule(Base):
     rule_type = Column(Text, nullable=False)
     rule_value = Column(Text, nullable=False)
     reason = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

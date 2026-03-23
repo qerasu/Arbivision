@@ -4,9 +4,12 @@ from time import monotonic
 from aiogram import Bot
 
 from arbitrage_bot.core.config import settings
+from arbitrage_bot.core.logging import get_logger
 
 _last_sent_at = {}
 _MAX_ERROR_DETAILS_LENGTH = 280
+_shared_bot = None
+log = get_logger("system_notifier")
 
 
 def _get_system_error_chat_ids():
@@ -85,10 +88,20 @@ def _should_skip_notification(dedupe_key):
     return False
 
 
-async def send_system_error_notification(source, operation, error):
+def _get_shared_bot():
+    global _shared_bot
     token = settings.TELEGRAM_BOT_TOKEN
+    if not token:
+        return None
+    if _shared_bot is None:
+        _shared_bot = Bot(token=token)
+    return _shared_bot
+
+
+async def send_system_error_notification(source, operation, error):
+    bot = _get_shared_bot()
     chat_ids = _get_system_error_chat_ids()
-    if not token or not chat_ids:
+    if not bot or not chat_ids:
         return False
 
     details = format_error_details(error)
@@ -97,7 +110,6 @@ async def send_system_error_notification(source, operation, error):
         return False
 
     message = _format_system_error_message(source, operation, error)
-    bot = Bot(token=token)
     try:
         for chat_id in chat_ids:
             await bot.send_message(chat_id=chat_id, text=message)
@@ -105,7 +117,5 @@ async def send_system_error_notification(source, operation, error):
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        print(f"failed to send telegram system error notification: {exc}")
+        log.error("failed to send system error notification", error=str(exc))
         return False
-    finally:
-        await bot.session.close()

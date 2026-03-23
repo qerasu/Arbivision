@@ -6,32 +6,10 @@ import tempfile
 import time
 from pathlib import Path
 
+from arbitrage_bot.core.env_loader import load_env_file
+
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
 
-
-def _load_env_file(path):
-    if not path.exists():
-        return
-
-    with path.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            if "=" not in line:
-                continue
-
-            key, val = line.split("=", 1)
-            key = key.strip().removeprefix("export ").strip()
-            val = val.strip()
-            if not key:
-                continue
-
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-
-            os.environ[key] = val
 
 
 def _pidfile():
@@ -99,8 +77,8 @@ def _confirm_drop(force):
     if force:
         return
 
-    print("this will remove docker containers, network, and volumes for Postgres and Redis.")
-    print("all current data in these databases will be deleted.")
+    print("\n[PIZDEC] this will remove docker containers, network, and volumes for Postgres and Redis.")
+    print("[PIZDEC] all current data in these databases will be deleted.\n")
     answer = input("type 'drop' to continue: ").strip().lower()
     if answer != "drop":
         print("operation cancelled")
@@ -120,13 +98,13 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    _load_env_file(ENV_FILE_PATH)
+    load_env_file(str(ENV_FILE_PATH))
     _confirm_drop(args.yes)
 
-    print("=== dropping arbitrage alert bot databases ===")
+    print("\n=== dropping arbitrage alert bot databases ===")
     _stop_tracked_process()
     _run_cmd(["docker", "compose", "down", "-v"])
-    print("postgres and redis data were removed successfully")
+    print("\npostgres and redis data were removed successfully")
 
 
 if __name__ == "__main__":

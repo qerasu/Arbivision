@@ -6,7 +6,6 @@ from arbitrage_bot.models.orm import MarketPair
 
 class MatcherService:
 
-
     def __init__(self):
         self.normalizer = NormalizerService()
         self.max_ranked_candidates = 25
@@ -21,6 +20,29 @@ class MatcherService:
             "final", "finals", "playoff", "playoffs", "conference", "eastern",
             "western", "league", "cup", "trophy", "championship", "champions",
             "season", "round", "today", "tomorrow"
+        }
+        self.semantic_qualifiers = {
+            # ordinals
+            "first", "second", "third", "fourth", "fifth",
+            "sixth", "seventh", "eighth", "ninth", "tenth",
+            "1st", "2nd", "3rd", "4th", "5th",
+            # rankings
+            "largest", "biggest", "smallest", "highest", "lowest",
+            "top", "bottom", "most", "least", "best", "worst",
+            # gender
+            "men", "women", "mens", "womens", "male", "female",
+            "boys", "girls",
+            # competition structure
+            "team", "individual", "singles", "doubles",
+            "junior", "senior", "amateur", "professional",
+            "open", "pro",
+        }
+        self.generic_outcome_labels = {
+            "up", "down", "over", "under",
+            "higher", "lower", "above", "below",
+            "increase", "decrease", "rise", "fall",
+            "bull", "bear", "long", "short",
+            "more", "less", "positive", "negative",
         }
 
 
@@ -172,6 +194,9 @@ class MatcherService:
         if not outcome_mapping:
             return False
 
+        if self._has_meaningful_title_difference(poly_words, pf_words):
+            return False
+
         if score >= 0.85 and poly_words == pf_words:
             return True
 
@@ -182,8 +207,34 @@ class MatcherService:
         ):
             return True
 
-        if participant_score >= 0.95 and poly_signature["kind"] == pf_signature["kind"]:
+        # non-matchup: require minimum title overlap alongside participant score
+        intersection = len(poly_words & pf_words)
+        union = len(poly_words | pf_words)
+        title_jaccard = intersection / union if union else 0.0
+
+        if (
+            participant_score >= 0.95
+            and poly_signature["kind"] == pf_signature["kind"]
+            and title_jaccard >= 0.5
+        ):
             return True
+
+        return False
+
+
+    def _has_meaningful_title_difference(self, poly_words, pf_words):
+        diff = poly_words.symmetric_difference(pf_words)
+        if not diff:
+            return False
+
+        for word in diff:
+            if word in self.semantic_qualifiers:
+                return True
+
+            # catch compound ordinals like 'thirdlargest' after normalization
+            for qualifier in self.semantic_qualifiers:
+                if qualifier in word and word != qualifier:
+                    return True
 
         return False
 
@@ -249,14 +300,7 @@ class MatcherService:
 
 
     def _normalize_outcome_label(self, value):
-        normalized = str(value or "").strip().lower()
-        if normalized in {"yes", "y"}:
-            return "yes"
-        if normalized in {"no", "n"}:
-            return "no"
-        if normalized in {"draw", "tie"}:
-            return "draw"
-        return normalized
+        return self.normalizer.normalize_outcome_label(value)
 
 
     def _extract_ordered_outcomes(self, market):
@@ -416,8 +460,12 @@ class MatcherService:
                 participants.append(subject)
 
         named_outcomes = self._extract_named_outcomes(market)
-        if len(named_outcomes) == 2:
-            participants.extend(outcome["label"] for outcome in named_outcomes)
+        meaningful = [
+            o for o in named_outcomes
+            if o["normalized_label"] not in self.generic_outcome_labels
+        ]
+        if len(meaningful) == 2:
+            participants.extend(outcome["label"] for outcome in meaningful)
 
         return self._canonical_participants(participants)
 

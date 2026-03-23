@@ -5,32 +5,10 @@ import tempfile
 from pathlib import Path
 import time
 
+from arbitrage_bot.core.env_loader import load_env_file
+
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
 
-
-def _load_env_file(path):
-    if not path.exists():
-        return
-
-    with path.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            if "=" not in line:
-                continue
-
-            key, val = line.split("=", 1)
-            key = key.strip().removeprefix("export ").strip()
-            val = val.strip()
-            if not key:
-                continue
-
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-
-            os.environ[key] = val
 
 
 def _pidfile():
@@ -77,7 +55,7 @@ def _stop_project_containers():
 
 def main():
     # load environment only from the shared config path
-    _load_env_file(ENV_FILE_PATH)
+    load_env_file(str(ENV_FILE_PATH))
 
     print("=== stopping arbitrage alert bot ===")
     app_host = os.environ.get("APP_HOST", "127.0.0.1")
@@ -129,6 +107,7 @@ def _is_port_in_use(host, port):
             return False
         except OSError:
             return True
+
 
 if __name__ == "__main__":
     main()

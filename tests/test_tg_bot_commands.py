@@ -139,8 +139,8 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("• NO on Polymarket @ $0.360 = $18", text)
         self.assertIn("• YES on Predict.Fun @ $0.500 = $25", text)
         self.assertIn("🔗 Open markets:", text)
-        self.assertIn("Polymarket: https://polymarket.com/event/manchester-united-win", text)
-        self.assertIn("Predict.Fun: https://predict.fun/market/pf-123", text)
+        self.assertIn('<a href="https://polymarket.com/market/manchester-united-win">Polymarket</a>', text)
+        self.assertIn('<a href="https://predict.fun/market/pf-123">Predict.Fun</a>', text)
 
 
     def test_format_alert_message_uses_outcome_labels_from_mapping(self):

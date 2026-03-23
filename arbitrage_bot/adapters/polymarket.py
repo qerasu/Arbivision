@@ -11,6 +11,11 @@ class PolymarketAdapter(BaseAdapter):
     clob_base_url = "https://clob.polymarket.com"
     page_limit = 100
     max_pages = 100
+    fallback_errors = (
+        httpx.ConnectError,
+        httpx.ReadTimeout,
+        httpx.RemoteProtocolError,
+    )
 
 
     def __init__(self):
@@ -72,7 +77,7 @@ class PolymarketAdapter(BaseAdapter):
             response = await self.client.get(path, params=params)
             response.raise_for_status()
             return response.json()
-        except httpx.ConnectError as exc:
+        except self.fallback_errors as exc:
             return await self._curl_get_json(path, params=params, original_exc=exc)
 
 

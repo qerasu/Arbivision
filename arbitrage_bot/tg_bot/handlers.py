@@ -61,24 +61,6 @@ async def cmd_settings(message):
     )
 
 
-@router.message(Command("reset"))
-async def cmd_reset(message):
-    command_parts = (message.text or "").strip().lower().split(maxsplit=1)
-    if len(command_parts) > 1 and command_parts[1] != "settings":
-        await message.answer("Use: /reset")
-        return
-
-    async with AsyncSessionLocal() as session:
-        preferences = await reset_global_preferences(session)
-        await clear_ui_state(session, message.chat.id)
-
-    await message.answer(
-        "Global settings reset.\n\n"
-        "All Telegram filters are disabled, so the bot will send every alert it finds.\n\n"
-        f"{format_preferences_text(preferences)}",
-        reply_markup=_build_settings_keyboard(),
-    )
-
 
 @router.callback_query(lambda callback: callback.data and callback.data.startswith("tg_nav:"))
 async def on_nav_callback(callback):
@@ -348,7 +330,7 @@ def _parse_setting_value(field_name, raw_value):
     if field_name == "max_days_to_close":
         parsed = int(value)
         if parsed <= 0:
-            raise ValueError("Expires must be greater than zero days.")
+            raise ValueError("Max market end must be greater than zero days.")
         return parsed
 
     raise ValueError("Unsupported setting.")

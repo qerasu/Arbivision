@@ -3,14 +3,14 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from arbitrage_bot.core.config import settings
-from arbitrage_bot.models.orm import Settings
+from arbitrage_bot.models.orm import SettingsRecord
 
 GLOBAL_SETTINGS_KEY = "tg_alert_prefs:global"
 UI_STATE_KEY_PREFIX = "tg_ui_state:"
 DEFAULT_PREFERENCES = {
     "min_roi_percent": None,
     "max_capital_usd": None,
-    "max_days_to_close": None,
+    "max_days_to_close": 30, # 30 days is a good default value for relevant bets
 }
 FIELD_LABELS = {
     "min_roi_percent": "Min ROI",
@@ -45,7 +45,7 @@ def default_preferences():
 
 
 async def get_global_preferences(db_session):
-    stmt = select(Settings).where(Settings.key == GLOBAL_SETTINGS_KEY)
+    stmt = select(SettingsRecord).where(SettingsRecord.key == GLOBAL_SETTINGS_KEY)
     result = await db_session.execute(stmt)
     setting = result.scalars().first()
     if not setting or not isinstance(setting.value_json, dict):
@@ -56,7 +56,7 @@ async def get_global_preferences(db_session):
 
 
 async def get_ui_state(db_session, chat_id):
-    stmt = select(Settings).where(Settings.key == _ui_state_key(chat_id))
+    stmt = select(SettingsRecord).where(SettingsRecord.key == _ui_state_key(chat_id))
     result = await db_session.execute(stmt)
     setting = result.scalars().first()
     if not setting or not isinstance(setting.value_json, dict):
@@ -77,19 +77,19 @@ async def reset_global_preferences(db_session):
 
 async def set_ui_state(db_session, chat_id, state):
     key = _ui_state_key(chat_id)
-    stmt = select(Settings).where(Settings.key == key)
+    stmt = select(SettingsRecord).where(SettingsRecord.key == key)
     result = await db_session.execute(stmt)
     setting = result.scalars().first()
 
     if setting is None:
-        setting = Settings(
+        setting = SettingsRecord(
             key=key,
             value_json=state,
         )
         db_session.add(setting)
     else:
         setting.value_json = state
-        setting.updated_at = datetime.utcnow()
+        setting.updated_at = datetime.now(timezone.utc)
 
     await db_session.commit()
     return state
@@ -100,32 +100,32 @@ async def clear_ui_state(db_session, chat_id):
 
 
 async def _save_global_preferences(db_session, preferences):
-    stmt = select(Settings).where(Settings.key == GLOBAL_SETTINGS_KEY)
+    stmt = select(SettingsRecord).where(SettingsRecord.key == GLOBAL_SETTINGS_KEY)
     result = await db_session.execute(stmt)
     setting = result.scalars().first()
     if setting is None:
-        setting = Settings(
+        setting = SettingsRecord(
             key=GLOBAL_SETTINGS_KEY,
             value_json=preferences,
         )
         db_session.add(setting)
     else:
         setting.value_json = preferences
-        setting.updated_at = datetime.utcnow()
+        setting.updated_at = datetime.now(timezone.utc)
 
     await db_session.commit()
     return preferences
 
 
 def format_preferences_text(preferences):
-    min_roi = _format_percent(effective_min_roi(preferences), fallback="off")
-    max_capital = _format_money(preferences.get("max_capital_usd"), fallback="off")
+    min_roi = _format_percent(effective_min_roi(preferences), fallback="0")
+    max_capital = _format_money(preferences.get("max_capital_usd"), fallback="0")
     max_days = _format_days(preferences.get("max_days_to_close"))
     return (
         "⚙️ Global alert settings\n\n"
         f"📈 Min ROI\nCurrent: {min_roi}\n\n"
         f"💵 Volume\nCurrent: {max_capital}\n\n"
-        f"⏳ Expires\nCurrent: {max_days}"
+        f"⏳ Max market end\nCurrent: {max_days}"
     )
 
 
@@ -136,8 +136,8 @@ def format_home_text(preferences):
         "🟢 Status: Active\n"
         "Filters are applied globally to all alerts.\n\n"
         "Your filters:\n"
-        f"• 📈 Min ROI: {_format_percent(effective_min_roi(preferences), fallback='off')}\n"
-        f"• 💵 Max volume: {_format_money(preferences.get('max_capital_usd'), fallback='off')} USD\n"
+        f"• 📈 Min ROI: {_format_percent(effective_min_roi(preferences), fallback='0')}\n"
+        f"• 💵 Max volume: {_format_money(preferences.get('max_capital_usd'), fallback='0')} USD\n"
         f"• ⏳ Max market end: {_format_days(preferences.get('max_days_to_close'))}"
     )
 
@@ -213,9 +213,9 @@ def effective_min_roi(preferences):
 
 def _format_field_value(field_name, preferences):
     if field_name == "min_roi_percent":
-        return _format_percent(effective_min_roi(preferences), fallback="off")
+        return _format_percent(effective_min_roi(preferences), fallback="0")
     if field_name == "max_capital_usd":
-        return f"{_format_money(preferences.get(field_name), fallback='off')} USD"
+        return f"{_format_money(preferences.get(field_name), fallback='0')} USD"
     return _format_days(preferences.get(field_name))
 
 

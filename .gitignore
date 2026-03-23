@@ -1,13 +1,4 @@
 __pycache__/
-*.py[cod]
-*$py.class
 .env
-env/
 .venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-/logs/
-AGENTS.md
-*.DS_store
+.DS_Store

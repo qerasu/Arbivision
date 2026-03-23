@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.models.orm import Market
-from arbitrage_bot.models.orm import Settings as OrmSettings
+from arbitrage_bot.models.orm import SettingsRecord as OrmSettings
 from arbitrage_bot.services.alert_manager import AlertManager
 
 

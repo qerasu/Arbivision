@@ -94,7 +94,7 @@ async def get_pairs(
 
 
 @router.post("/admin/pairs/{pair_id}/approve")
-async def approve_pair(pair_id, db=Depends(get_db), _=Depends(require_admin_token)):
+async def approve_pair(pair_id: int, db=Depends(get_db), _=Depends(require_admin_token)):
     stmt = select(MarketPair).where(MarketPair.id == pair_id)
     result = await db.execute(stmt)
     pair = result.scalars().first()

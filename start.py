@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 import socket
 
+from arbitrage_bot.core.env_loader import load_env_file
+
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
 
 
@@ -128,30 +130,6 @@ def _run_alembic_upgrade_with_retry(python_exec, db_host, db_port, retries=5):
         time.sleep(1.5)
 
 
-def _load_env_file(path):
-    if not path.exists():
-        return
-
-    with path.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            if "=" not in line:
-                continue
-
-            key, val = line.split("=", 1)
-            key = key.strip().removeprefix("export ").strip()
-            val = val.strip()
-            if not key:
-                continue
-
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-
-            os.environ[key] = val
-
 
 def _wait_for_exit(pid, timeout=8):
     deadline = time.time() + timeout
@@ -201,7 +179,7 @@ def _show_port_owners(port):
 
 def main():
     # load environment only from the shared config path
-    _load_env_file(ENV_FILE_PATH)
+    load_env_file(str(ENV_FILE_PATH))
 
     print('=== starting arbitrage alert bot ===')
 
@@ -244,7 +222,7 @@ def main():
         str(port),
     ]
 
-    proc = subprocess.Popen(cmd, env=env, preexec_fn=os.setsid)
+    proc = subprocess.Popen(cmd, env=env, process_group=0)
     _pidfile().write_text(str(proc.pid))
 
     try:

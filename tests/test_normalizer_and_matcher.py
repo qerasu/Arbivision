@@ -294,3 +294,85 @@ class MatcherServiceTests(unittest.TestCase):
 
         self.assertFalse(decision["matched"])
         self.assertEqual(decision["reason"]["reject_reason"], "number_mismatch")
+
+
+    def test_rejects_nvidia_third_largest_vs_largest(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will NVIDIA be the third-largest company in the world by market cap on March 31?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="NVIDIA largest company on Mar 31",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)
+
+
+    def test_rejects_pga_category_vs_specific_player_market(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will Tommy Fleetwood win the 2026 Masters tournament?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="PGA Major Champs 2026",
+            outcomes_json=[
+                {"id": "pf-a", "label": "Scottie Scheffler"},
+                {"id": "pf-b", "label": "Rory McIlroy"},
+            ],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)
+
+
+    def test_rejects_womens_ncaa_vs_mens_ncaa(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will Duke win the 2026 Women's NCAA Tournament?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="2026 Men's NCAA Tournament Winner",
+            outcomes_json=[
+                {"id": "pf-a", "label": "Duke"},
+                {"id": "pf-b", "label": "Auburn"},
+            ],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)
+
+
+    def test_rejects_different_markets_with_same_generic_outcomes(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Canada's population Up or Down this year?",
+            outcomes_json=[{"id": "poly-a", "label": "Up"}, {"id": "poly-b", "label": "Down"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="BTC/USD Up or Down - March 22",
+            outcomes_json=[{"id": "pf-a", "label": "Up"}, {"id": "pf-b", "label": "Down"}],
+            raw_payload_json={},
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)

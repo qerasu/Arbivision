@@ -1,24 +1,28 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 
 from arbitrage_bot.adapters.polymarket import PolymarketAdapter
 from arbitrage_bot.adapters.predict_fun import PredictFunAdapter
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.models.orm import Market
+from arbitrage_bot.services.normalizer import NormalizerService
 from arbitrage_bot.services.system_notifier import format_compact_error, send_system_error_notification
+
+log = get_logger("ingestion")
 
 
 class IngestionService:
 
     UPSERT_LOOKUP_BATCH_SIZE = 1000
 
-
     def __init__(self, db_session):
         self.db = db_session
         self.polymarket = PolymarketAdapter()
         self.predict_fun = PredictFunAdapter()
+        self.normalizer = NormalizerService()
 
 
     async def close(self):
@@ -27,12 +31,7 @@ class IngestionService:
 
 
     def _normalize_outcome_label(self, value):
-        normalized = str(value or "").strip().lower()
-        if normalized in {"yes", "y"}:
-            return "yes"
-        if normalized in {"no", "n"}:
-            return "no"
-        return normalized
+        return self.normalizer.normalize_outcome_label(value)
 
 
     def _normalize_outcomes(self, outcomes):
@@ -161,7 +160,7 @@ class IngestionService:
 
 
     def _map_predict_fun_market(self, market):
-        title = market.get("title") or market.get("question") or market.get("name") or ""
+        title = market.get("question") or market.get("title") or market.get("name") or ""
         trading_status = str(market.get("tradingStatus") or "").upper()
         market_status = str(market.get("status") or "").upper()
         tradable = (
@@ -181,7 +180,7 @@ class IngestionService:
             "outcomes_json": self._normalize_outcomes(market.get("outcomes", [])),
             "raw_payload_json": dict(market),
             "category": market.get("category") or market.get("categorySlug") or "",
-            "slug": market.get("slug") or market.get("imageUrl") or ""
+            "slug": market.get("slug") or market.get("categorySlug") or ""
         }
 
 
@@ -226,7 +225,7 @@ class IngestionService:
             raise
         except Exception as e:
             if "connection is closed" not in str(e).lower() and "[errno 61]" not in str(e).lower():
-                print(self._format_source_error(source_name, "markets sync", e))
+                log.warning("markets sync failed", source=source_name, error=self._format_source_error(source_name, "markets sync", e))
                 await send_system_error_notification(source_name, "markets sync", e)
             await self.db.rollback()
 
@@ -304,4 +303,4 @@ class IngestionService:
         market.raw_payload_json = data["raw_payload_json"]
         market.category = data["category"]
         market.slug = data["slug"]
-        market.updated_at = datetime.utcnow()
+        market.updated_at = datetime.now(timezone.utc)

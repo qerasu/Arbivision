@@ -1,18 +1,20 @@
 import asyncio
 from arbitrage_bot.adapters.polymarket import PolymarketAdapter
 from arbitrage_bot.adapters.predict_fun import PredictFunAdapter
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.models.orm import Market
 from arbitrage_bot.services.system_notifier import format_compact_error
 from sqlalchemy.future import select
 
+log = get_logger("orderbook")
+
 
 class OrderbookService:
-
 
     def __init__(self):
         self.polymarket = PolymarketAdapter()
         self.predict_fun = PredictFunAdapter()
-        self._pair_fetch_concurrency = 8
+        self._pair_fetch_concurrency = 4
 
 
     async def close(self):
@@ -56,38 +58,30 @@ class OrderbookService:
             poly_platform_id, pf_platform_id = self._resolve_platform_market_ids(pair, market_id_map)
 
             if not poly_platform_id or not pf_platform_id:
-                print(
-                    self._format_pair_error(
-                        pair,
-                        poly_platform_id,
-                        pf_platform_id,
-                        "missing platform market id",
-                    )
+                log.warning(
+                    "missing platform market id",
+                    pair_id=pair.id,
+                    poly_id=poly_platform_id or "missing",
+                    pf_id=pf_platform_id or "missing",
                 )
                 return None
 
             try:
                 pf_ob = await self.predict_fun.fetch_orderbook(pf_platform_id)
             except Exception as exc:
-                print(
-                    self._format_pair_error(
-                        pair,
-                        poly_platform_id,
-                        pf_platform_id,
-                        f"predict.fun orderbook fetch failed: {format_compact_error(exc)}",
-                    )
+                log.warning(
+                    "orderbook fetch failed",
+                    pair_id=pair.id,
+                    source="predict.fun",
+                    error=format_compact_error(exc),
                 )
                 return None
 
             directions = await self._build_direction_books(pair, pf_ob)
             if not directions:
-                print(
-                    self._format_pair_error(
-                        pair,
-                        poly_platform_id,
-                        pf_platform_id,
-                        "directional books unavailable",
-                    )
+                log.warning(
+                    "directional books unavailable",
+                    pair_id=pair.id,
                 )
                 return None
 
@@ -219,21 +213,23 @@ class OrderbookService:
         return sorted(levels, key=lambda item: item[0])
 
 
+    def _first_not_none(self, *values):
+        return next((v for v in values if v is not None), None)
+
+
     def _extract_level(self, level):
         if isinstance(level, dict):
-            price = level.get("price", None)
-            if price is None:
-                price = level.get("p", None)
-            if price is None:
-                price = level.get("rate", None)
-
-            size = level.get("size", None)
-            if size is None:
-                size = level.get("s", None)
-            if size is None:
-                size = level.get("quantity", None)
-            if size is None:
-                size = level.get("qty", None)
+            price = self._first_not_none(
+                level.get("price"),
+                level.get("p"),
+                level.get("rate"),
+            )
+            size = self._first_not_none(
+                level.get("size"),
+                level.get("s"),
+                level.get("quantity"),
+                level.get("qty"),
+            )
 
             if price is None or size is None:
                 return None

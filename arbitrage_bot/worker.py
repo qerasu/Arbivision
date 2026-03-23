@@ -8,11 +8,14 @@ from arbitrage_bot.services.orderbook import OrderbookService
 from arbitrage_bot.services.calculator import ArbitrageCalculator
 from arbitrage_bot.services.alert_manager import AlertManager
 from arbitrage_bot.core.config import settings
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.services.system_notifier import format_error_details, send_system_error_notification
 from arbitrage_bot.tg_bot.preferences import get_global_preferences
 from sqlalchemy.future import select
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
+
+log = get_logger("worker")
 
 
 async def run_sync_loop():
@@ -25,7 +28,7 @@ async def run_sync_loop():
             raise
         except Exception as e:
             # logging sync error
-            print(f"error in sync loop: {format_error_details(e)}")
+            log.error("sync loop error", error=format_error_details(e))
             await send_system_error_notification("worker", "sync loop", e)
         await asyncio.sleep(settings.MARKET_REFRESH_SECONDS)
 
@@ -150,7 +153,7 @@ def _mark_stale_pairs(pairs):
     active_statuses = {"auto_approved", "approved"}
 
     for pair in pairs:
-        if pair.status in active_statuses and pair.status != "stale":
+        if pair.status in active_statuses:
             pair.status = "stale"
             changed = True
 
@@ -187,9 +190,10 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
                     preferences=preferences,
                 )
             except Exception as e:
-                print(
-                    f"failed to process opportunity for pair {pair.id}: "
-                    f"{format_error_details(e)}"
+                log.error(
+                    "failed to process opportunity",
+                    pair_id=pair.id,
+                    error=format_error_details(e),
                 )
                 await send_system_error_notification("worker", f"process opportunity pair {pair.id}", e)
 
@@ -248,6 +252,7 @@ async def _load_market_map_for_pairs(db, pairs):
     stmt = select(Market).where(Market.id.in_(market_ids))
     markets = (await db.execute(stmt)).scalars().all()
     return {market.id: market for market in markets}
+
 
 if __name__ == "__main__":
     asyncio.run(run_sync_loop())

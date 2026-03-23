@@ -54,7 +54,7 @@ class IngestionOutcomeNormalizationTests(unittest.TestCase):
         mapped = self.service._map_predict_fun_market(
             {
                 "id": 77,
-                "title": "Knicks vs. Spurs",
+                "title": "Spurs",
                 "question": "Knicks vs. Spurs",
                 "tradingStatus": "OPEN",
                 "status": "RESOLVED",
