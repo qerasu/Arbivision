@@ -17,7 +17,6 @@ class PredictFunAdapter(BaseAdapter):
         httpx.RemoteProtocolError,
     )
 
-
     def __init__(self):
         from arbitrage_bot.core.config import settings
         headers = {}

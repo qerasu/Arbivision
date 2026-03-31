@@ -17,7 +17,6 @@ class PolymarketAdapter(BaseAdapter):
         httpx.RemoteProtocolError,
     )
 
-
     def __init__(self):
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
         self.clob_client = httpx.AsyncClient(base_url=self.clob_base_url, timeout=10.0)
@@ -42,12 +41,14 @@ class PolymarketAdapter(BaseAdapter):
             }
             payload = await self._get_json("/markets", params=params)
             items = self._extract_items(payload)
+
             if items is None:
                 return payload
             if not items:
                 break
 
             batch_ids = tuple(str(item.get("id")) for item in items if isinstance(item, dict))
+
             if previous_batch_ids is not None and batch_ids == previous_batch_ids:
                 break
 
@@ -69,6 +70,7 @@ class PolymarketAdapter(BaseAdapter):
         payload = [{"token_id": str(token_id)} for token_id in token_ids]
         response = await self.clob_client.post("/books", json=payload)
         response.raise_for_status()
+        
         return response.json()
 
 
@@ -111,6 +113,8 @@ class PolymarketAdapter(BaseAdapter):
         if isinstance(payload, dict):
             data = payload.get("data", payload)
             return data if isinstance(data, list) else None
+
         if isinstance(payload, list):
             return payload
+
         return None
