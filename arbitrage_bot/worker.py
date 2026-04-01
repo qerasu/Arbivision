@@ -30,6 +30,7 @@ async def run_sync_loop():
             # logging sync error
             log.error("sync loop error", error=format_error_details(e))
             await send_system_error_notification("worker", "sync loop", e)
+            
         await asyncio.sleep(settings.MARKET_REFRESH_SECONDS)
 
 

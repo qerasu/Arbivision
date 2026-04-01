@@ -119,17 +119,20 @@ async def _save_global_preferences(db_session, preferences):
 
 def format_preferences_text(preferences):
     min_roi = _format_percent(effective_min_roi(preferences), fallback="0")
-    max_capital = _format_money(preferences.get("max_capital_usd"), fallback="0")
+    max_capital = preferences.get("max_capital_usd")
+    max_capital_str = "off" if max_capital is None else f"{_format_money(max_capital, fallback='')} USD"
     max_days = _format_days(preferences.get("max_days_to_close"))
     return (
         "⚙️ Global alert settings\n\n"
         f"📈 Min ROI\nCurrent: {min_roi}\n\n"
-        f"💵 Volume\nCurrent: {max_capital}\n\n"
+        f"💵 Volume\nCurrent: {max_capital_str}\n\n"
         f"⏳ Max market end\nCurrent: {max_days}"
     )
 
 
 def format_home_text(preferences):
+    max_capital = preferences.get("max_capital_usd")
+    max_capital_str = "off" if max_capital is None else f"{_format_money(max_capital, fallback='')} USD"
     return (
         "🔎 Arbitrage Scanner\n\n"
         "Monitors Polymarket and Predict.Fun for spread inefficiencies.\n\n"
@@ -137,7 +140,7 @@ def format_home_text(preferences):
         "Filters are applied globally to all alerts.\n\n"
         "Your filters:\n"
         f"• 📈 Min ROI: {_format_percent(effective_min_roi(preferences), fallback='0')}\n"
-        f"• 💵 Max volume: {_format_money(preferences.get('max_capital_usd'), fallback='0')} USD\n"
+        f"• 💵 Max volume: {max_capital_str}\n"
         f"• ⏳ Max market end: {_format_days(preferences.get('max_days_to_close'))}"
     )
 
@@ -216,7 +219,8 @@ def _format_field_value(field_name, preferences):
     if field_name == "min_roi_percent":
         return _format_percent(effective_min_roi(preferences), fallback="0")
     if field_name == "max_capital_usd":
-        return f"{_format_money(preferences.get(field_name), fallback='0')} USD"
+        val = preferences.get(field_name)
+        return "off" if val is None else f"{_format_money(val, fallback='')} USD"
     return _format_days(preferences.get(field_name))
 
 

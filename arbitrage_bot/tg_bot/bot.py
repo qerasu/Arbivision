@@ -59,7 +59,7 @@ def _format_alert_message(opportunity, pair, market_a, market_b):
     shares = _format_shares(opportunity.shares)
     leg_1_cost = _format_money(opportunity.avg_price_leg_1 * opportunity.shares)
     leg_2_cost = _format_money(opportunity.avg_price_leg_2 * opportunity.shares)
-    shares_ratio = _format_shares_ratio(opportunity.avg_price_leg_1, opportunity.avg_price_leg_2)
+    volumes_ratio = _format_volumes_ratio(opportunity.avg_price_leg_1, opportunity.avg_price_leg_2)
     expires = _format_expiry_line(market_a, market_b)
     links = _format_market_links(market_a, market_b)
 
@@ -72,7 +72,7 @@ def _format_alert_message(opportunity, pair, market_a, market_b):
         f"🧾 Buy {shares} shares each:\n"
         f"• {direction['leg_1_label']} on Polymarket @ {_format_price(opportunity.avg_price_leg_1)} = {leg_1_cost}\n"
         f"• {direction['leg_2_label']} on Predict.Fun @ {_format_price(opportunity.avg_price_leg_2)} = {leg_2_cost}\n"
-        f"📊 Shares ratio: {shares_ratio}\n\n"
+        f"📊 Volumes ratio: {volumes_ratio}x\n\n"
         f"🔗 Open markets:\n{links}"
     )
 
@@ -115,6 +115,7 @@ def _format_expiry_line(market_a, market_b):
         0,
         math.ceil((close_at - now).total_seconds() / 86400),
     )
+
     return f"⏳ Max market end: {close_at.date().isoformat()} ({remaining_days} days)"
 
 
@@ -160,8 +161,10 @@ def _build_market_url(market):
 
 def _format_money(value):
     rounded = round(float(value), 2)
+
     if rounded.is_integer():
         return f"${int(rounded)}"
+
     return f"${rounded:.2f}"
 
 
@@ -171,12 +174,14 @@ def _format_price(value):
 
 def _format_shares(value):
     rounded = round(float(value), 2)
+
     if rounded.is_integer():
         return str(int(rounded))
+
     return f"{rounded:.2f}"
 
 
-def _format_shares_ratio(price_leg_1, price_leg_2):
+def _format_volumes_ratio(price_leg_1, price_leg_2):
     p1 = float(price_leg_1)
     p2 = float(price_leg_2)
     if p1 <= 0 or p2 <= 0:
@@ -187,7 +192,7 @@ def _format_shares_ratio(price_leg_1, price_leg_2):
     else:
         ratio = p2 / p1
 
-    return f"{ratio:.2f}x"
+    return f"{ratio:.2f}"
 
 
 def _is_missing_table_error(exc):
@@ -199,6 +204,7 @@ def _is_missing_table_error(exc):
         return True
 
     details = format_error_details(exc).lower()
+    
     return "does not exist" in details and "relation" in details
 
 

@@ -11,7 +11,6 @@ from arbitrage_bot.core.env_loader import load_env_file
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
 
 
-
 def _pidfile():
     return Path(tempfile.gettempdir()) / "arbitrage_alert_bot.pid"
 
