@@ -51,8 +51,8 @@ Arbivision — арбитражный бот, который мониторит 
                   │                            │
                   ▼                            ▼
          ┌──────────────┐            ┌──────────────────┐
-         │  PostgreSQL   │            │      Redis       │
-         │  (async ORM)  │            │  (dedupe cache)  │
+         │  PostgreSQL  │            │      Redis       │
+         │  (async ORM) │            │  (dedupe cache)  │
          └──────────────┘            └──────────────────┘
 ```
 
@@ -412,13 +412,13 @@ pf_asks   = [(0.45, 400), (0.47, 200), ...]   # sorted by price ASC
 🧾 Buy 500 shares each:
 • Yes on Polymarket @ $0.410 = $205
 • No on Predict.Fun @ $0.440 = $220
-📊 Shares ratio: 1.07x
+📊 Voluemes ratio: 1.07x
 
 🔗 Open markets:
 Polymarket | Predict.Fun
 ```
 
-**Shares ratio** — отношение бо́льшей цены share к меньшей. Показывает, насколько разбалансированы цены между площадками.
+**Volumes ratio** — отношение бо́льшей цены share к меньшей. Нужно для быстрого пересчета количества shares под нужный пользователю объем.
 
 Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
 
