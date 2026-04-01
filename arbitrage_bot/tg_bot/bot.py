@@ -105,7 +105,7 @@ def _describe_direction(direction, pair=None):
 def _format_expiry_line(market_a, market_b):
     close_at = extract_pair_close_datetime(market_a, market_b)
     if close_at is None:
-        return "⏳ Max market end: Unknown"
+        return "⏳ Ends in: Unknown"
 
     if close_at.tzinfo is None:
         close_at = close_at.replace(tzinfo=timezone.utc)
@@ -116,7 +116,7 @@ def _format_expiry_line(market_a, market_b):
         math.ceil((close_at - now).total_seconds() / 86400),
     )
 
-    return f"⏳ Max market end: {close_at.date().isoformat()} ({remaining_days} days)"
+    return f"⏳ Ends on: {close_at.date().isoformat()} (in {remaining_days} days)"
 
 
 def _format_market_links(market_a, market_b):

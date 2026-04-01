@@ -139,8 +139,8 @@ def format_home_text(preferences):
         "🟢 Status: Active\n"
         "Filters are applied globally to all alerts.\n\n"
         "Your filters:\n"
-        f"• 📈 Min ROI: {_format_percent(effective_min_roi(preferences), fallback='0')}\n"
-        f"• 💵 Max volume: {max_capital_str}\n"
+        f"• 📈 Min ROI: {_format_percent(effective_min_roi(preferences), fallback='0')}%\n"
+        f"• 💵 Max volume: {max_capital_str}$\n"
         f"• ⏳ Max market end: {_format_days(preferences.get('max_days_to_close'))}"
     )
 
