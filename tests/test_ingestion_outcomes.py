@@ -4,8 +4,6 @@ from arbitrage_bot.services.ingestion import IngestionService
 
 
 class IngestionOutcomeNormalizationTests(unittest.TestCase):
-
-
     def setUp(self):
         self.service = IngestionService(db_session=None)
 

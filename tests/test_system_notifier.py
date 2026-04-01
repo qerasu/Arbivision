@@ -7,8 +7,6 @@ from arbitrage_bot.services.ingestion import IngestionService
 
 
 class FakeDbSession:
-
-
     def __init__(self):
         self.rollback_calls = 0
         self.commit_calls = 0
@@ -23,8 +21,6 @@ class FakeDbSession:
 
 
 class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def asyncSetUp(self):
         system_notifier._last_sent_at.clear()
         system_notifier._shared_bot = None

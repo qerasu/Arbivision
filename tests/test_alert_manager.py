@@ -9,8 +9,6 @@ from arbitrage_bot.services.alert_manager import AlertManager
 
 
 class FakeRedis:
-
-
     def __init__(self, initial_data=None):
         self.data = dict(initial_data or {})
         self.setex_calls = []
@@ -30,8 +28,6 @@ class FakeRedis:
 
 
 class FakeDbSession:
-
-
     def __init__(self):
         self.added = []
         self.flush_calls = 0
@@ -73,8 +69,6 @@ class FakeDbSession:
 
 
 class FakeScalarResult:
-
-
     def __init__(self, items):
         self.items = items
 
@@ -92,8 +86,6 @@ class FakeScalarResult:
 
 
 class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
-
-
     def _build_markets(self):
         return (
             Market(

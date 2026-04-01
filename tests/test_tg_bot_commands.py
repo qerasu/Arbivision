@@ -23,8 +23,6 @@ from sqlalchemy.exc import ProgrammingError
 
 
 class TelegramBotCommandsTests(unittest.TestCase):
-
-
     def test_parse_set_command_for_roi(self):
         field_name, value = _parse_set_command("/set roi 1.5")
 
@@ -201,8 +199,6 @@ class TelegramBotCommandsTests(unittest.TestCase):
 
 
 class FakeSessionContext:
-
-
     async def __aenter__(self):
         return object()
 
@@ -211,12 +207,7 @@ class FakeSessionContext:
         return False
 
 
-
-
-
 class TelegramBotStatusCommandTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_status_clears_pending_ui_state(self):
         message = AsyncMock()
         message.chat.id = 123
@@ -244,8 +235,6 @@ class TelegramBotStatusCommandTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_apply_setting_update_reuses_prompt_message_when_available(self):
         message = AsyncMock()
         message.chat.id = 123
@@ -324,8 +313,6 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TelegramBotCallbackTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_safe_edit_text_ignores_message_not_modified_error(self):
         callback = SimpleNamespace(
             message=SimpleNamespace(

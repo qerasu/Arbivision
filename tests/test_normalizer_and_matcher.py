@@ -6,8 +6,6 @@ from arbitrage_bot.services.normalizer import NormalizerService
 
 
 class NormalizerServiceTests(unittest.TestCase):
-
-
     def test_normalize_text_removes_punctuation_and_collapses_spaces(self):
         service = NormalizerService()
 
@@ -26,8 +24,6 @@ class NormalizerServiceTests(unittest.TestCase):
 
 
 class MatcherServiceTests(unittest.TestCase):
-
-
     def setUp(self):
         self.matcher = MatcherService()
 

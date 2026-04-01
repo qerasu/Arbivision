@@ -44,8 +44,6 @@ def _load_env_file(path):
     "set RUN_LIVE_DB_TESTS=1 to run live database smoke tests",
 )
 class LiveDatabaseSmokeTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def asyncSetUp(self):
         _load_env_file(ENV_FILE_PATH)
         self.engine = create_async_engine(

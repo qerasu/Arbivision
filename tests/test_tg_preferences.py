@@ -12,8 +12,6 @@ from arbitrage_bot.tg_bot.preferences import format_preferences_text
 
 
 class TelegramPreferencesTests(unittest.TestCase):
-
-
     def test_filter_reason_returns_none_when_opportunity_passes_all_filters(self):
         opportunity = SimpleNamespace(net_roi=0.12, capital_required=100.0)
         now = datetime(2026, 3, 21, tzinfo=timezone.utc)

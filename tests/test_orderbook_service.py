@@ -6,8 +6,6 @@ from arbitrage_bot.services.orderbook import OrderbookService
 
 
 class FakeResult:
-
-
     def __init__(self, rows):
         self._rows = rows
 
@@ -17,8 +15,6 @@ class FakeResult:
 
 
 class FakeDbSession:
-
-
     def __init__(self, rows):
         self.rows = rows
 
@@ -28,8 +24,6 @@ class FakeDbSession:
 
 
 class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_fetches_orderbooks_when_pair_market_sides_are_reversed(self):
         service = OrderbookService()
         service.predict_fun.fetch_orderbook = AsyncMock(

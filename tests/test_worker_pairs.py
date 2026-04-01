@@ -6,8 +6,6 @@ from arbitrage_bot.worker import _candidate_markets_for_poly, _mark_stale_pairs,
 
 
 class WorkerPairLifecycleTests(unittest.TestCase):
-
-
     def test_reconcile_updates_existing_pair_and_keeps_manual_approval(self):
         existing_pair = SimpleNamespace(
             pair_hash="pair-1",

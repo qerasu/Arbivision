@@ -6,32 +6,9 @@ from urllib import error
 from urllib import parse
 from urllib import request
 
+from arbitrage_bot.core.env_loader import load_env_file
+
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
-
-
-def _load_env_file(path):
-    if not path.exists():
-        return
-
-    with path.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            if "=" not in line:
-                continue
-
-            key, val = line.split("=", 1)
-            key = key.strip().removeprefix("export ").strip()
-            val = val.strip()
-            if not key:
-                continue
-
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-
-            os.environ[key] = val
 
 
 def _base_url():
@@ -53,11 +30,9 @@ def _request_json(url, headers=None):
     "set RUN_LIVE_TESTS=1 to run live API smoke tests",
 )
 class LiveApiSmokeTests(unittest.TestCase):
-
-
     @classmethod
     def setUpClass(cls):
-        _load_env_file(ENV_FILE_PATH)
+        load_env_file(ENV_FILE_PATH)
         cls.base_url = _base_url()
         cls.admin_token = os.environ.get("ADMIN_API_TOKEN", "").strip()
 

@@ -7,8 +7,6 @@ from arbitrage_bot.adapters.predict_fun import PredictFunAdapter
 
 
 class PolymarketAdapterTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_fetch_markets_collects_all_pages(self):
         adapter = PolymarketAdapter()
         adapter._get_json = AsyncMock(
@@ -57,8 +55,6 @@ class PolymarketAdapterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PredictFunAdapterTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_fetch_markets_collects_all_pages(self):
         adapter = PredictFunAdapter()
         adapter.recent_start_id = None

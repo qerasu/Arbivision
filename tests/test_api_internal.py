@@ -6,11 +6,8 @@ from arbitrage_bot.api.internal import debug_matcher, get_pairs, status_check
 
 
 class FakeScalars:
-
-
     def __init__(self, values):
         self._values = values
-
 
 
     def first(self):
@@ -26,11 +23,8 @@ class FakeScalars:
 
 
 class FakeResult:
-
-
     def __init__(self, row):
         self._row = row
-
 
 
     def one(self):
@@ -46,11 +40,8 @@ class FakeResult:
 
 
 class FakeDb:
-
-
     def __init__(self, rows):
         self._rows = iter(rows)
-
 
 
     async def execute(self, _stmt):
@@ -58,8 +49,6 @@ class FakeDb:
 
 
 class InternalApiTests(unittest.IsolatedAsyncioTestCase):
-
-
     async def test_status_check_returns_compact_runtime_summary(self):
         db = FakeDb(
             [
@@ -134,8 +123,6 @@ class InternalApiTests(unittest.IsolatedAsyncioTestCase):
 
 
         class FakeMatcher:
-
-
             def build_market_signature(self, market):
                 return signatures[market.id]
 

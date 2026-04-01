@@ -4,8 +4,6 @@ from arbitrage_bot.services.calculator import ArbitrageCalculator
 
 
 class ArbitrageCalculatorTests(unittest.TestCase):
-
-
     def test_calculates_weighted_opportunity_across_multiple_levels(self):
         calculator = ArbitrageCalculator()
 

@@ -5,33 +5,9 @@ import sys
 from pathlib import Path
 from urllib import error, parse, request
 
+from arbitrage_bot.core.env_loader import load_env_file
+
 ENV_FILE_PATH = Path.home() / ".config" / "arbivision" / ".env"
-
-
-def _load_env_file(path):
-    if not path.exists():
-        return
-
-    with path.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            if "=" not in line:
-                continue
-
-            key, val = line.split("=", 1)
-            key = key.strip().removeprefix("export ").strip()
-            val = val.strip()
-            if not key:
-                continue
-
-            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-                val = val[1:-1]
-
-            os.environ[key] = val
-
 
 def _parse_args():
     parser = argparse.ArgumentParser()
@@ -130,7 +106,7 @@ def _run_check(name, url, headers=None, verbose=False):
 
 
 def main():
-    _load_env_file(ENV_FILE_PATH)
+    load_env_file(ENV_FILE_PATH)
     args = _parse_args()
     base_url = _base_url(args)
     admin_headers = _admin_headers()

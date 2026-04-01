@@ -4,8 +4,6 @@ from arbitrage_bot.services.orderbook import OrderbookService
 
 
 class ExtractAsksTests(unittest.TestCase):
-
-
     def setUp(self):
         self.service = OrderbookService()
 
