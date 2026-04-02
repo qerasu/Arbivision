@@ -30,9 +30,14 @@ class ArbitrageCalculator:
             if p_price < 0 or f_price < 0 or p_size <= 0 or f_size <= 0:
                 return None
 
-            sum_price = p_price + f_price
-            if sum_price >= 1.0:
+            net_p_price = p_price * (1.0 + self.fee_poly)
+            net_f_price = f_price * (1.0 + self.fee_pf)
+            net_sum_price = net_p_price + net_f_price
+
+            if net_sum_price >= 1.0:
                 break
+
+            sum_price = p_price + f_price
 
             take_size = min(p_size, f_size)
 
@@ -59,6 +64,9 @@ class ArbitrageCalculator:
 
         total_fees = cost_poly * self.fee_poly + cost_pf * self.fee_pf
         net_profit = gross_profit - total_fees
+
+        if net_profit <= 0:
+            return None
 
         gross_roi = gross_profit / capital if capital > 0 else 0.0
         net_roi = net_profit / capital if capital > 0 else 0.0

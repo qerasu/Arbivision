@@ -1,3 +1,4 @@
+import argparse
 import os
 import signal
 import subprocess
@@ -42,14 +43,50 @@ def _kill_process_group(pid, signum):
             return False
 
 
-def _stop_project_containers():
-    cmd = "docker compose stop"
+def _stop_project_containers(drop_db=False):
+    if drop_db:
+        cmd = "docker compose down -v"
+        success_msg = "postgres and redis data were removed successfully"
+    else:
+        cmd = "docker compose stop"
+        success_msg = ""
+        
     print(f"running: {cmd}")
     result = subprocess.run(cmd, shell=True)
     if result.returncode != 0:
         print(f"error while running: {cmd}")
         return False
+        
+    if success_msg:
+        print(f"\n{success_msg}")
     return True
+
+
+def _confirm_drop(force):
+    if force:
+        return
+
+    print("\n[PIZDEC] this will remove docker containers, network, and volumes for Postgres and Redis.")
+    print("[PIZDEC] all current data in these databases will be deleted.\n")
+    answer = input("type 'drop' to continue: ").strip().lower()
+    if answer != "drop":
+        print("operation cancelled")
+        raise SystemExit(1)
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Stop the arbitrage bot.")
+    parser.add_argument(
+        "--drop",
+        action="store_true",
+        help="Drop databases (remove containers, network, and volumes)",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation prompt when using --drop",
+    )
+    return parser.parse_args()
 
 
 def _is_port_in_use(host, port):
@@ -65,10 +102,18 @@ def _is_port_in_use(host, port):
 
 
 def main():
+    args = _parse_args()
+    
+    if args.drop:
+        _confirm_drop(args.yes)
+
     # load environment only from the shared config path
     load_env_file(str(ENV_FILE_PATH))
 
-    print("=== stopping arbitrage alert bot ===")
+    if args.drop:
+        print("=== dropping arbitrage alert bot databases ===")
+    else:
+        print("=== stopping arbitrage alert bot ===")
     app_host = os.environ.get("APP_HOST", "127.0.0.1")
     app_port = os.environ.get("APP_PORT", "8000")
     try:
@@ -103,7 +148,7 @@ def main():
             f"WARNING: port {app_host}:{app_port_int} is still busy. "
         )
 
-    _stop_project_containers()
+    _stop_project_containers(drop_db=args.drop)
 
     print("bot was successfully stopped!")
 

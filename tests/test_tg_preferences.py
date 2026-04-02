@@ -121,7 +121,7 @@ class TelegramPreferencesTests(unittest.TestCase):
         self.assertIn("Volume\nCurrent: $140.50", text)
 
 
-    def test_effective_min_roi_falls_back_to_system_default(self):
+    def test_effective_min_roi_returns_default(self):
         value = effective_min_roi(default_preferences())
 
         self.assertIsNone(value)

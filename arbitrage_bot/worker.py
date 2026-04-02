@@ -16,6 +16,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 log = get_logger("worker")
+_pair_empty_counts = {} # for checking if the pair is valid and has enough liquidity
 
 
 async def run_sync_loop():
@@ -177,9 +178,16 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
     if not pairs:
         return
 
+    active_pairs = _filter_skippable_pairs(pairs)
+    if not active_pairs:
+        return
+
     preferences = await get_global_preferences(db)
-    market_map = await _load_market_map_for_pairs(db, pairs)
-    orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs(pairs, db)
+    market_map = await _load_market_map_for_pairs(db, active_pairs)
+    orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs(active_pairs, db)
+
+    pairs_with_data = {item["pair"].pair_hash for item in orderbooks_data}
+    _update_empty_counts(active_pairs, pairs_with_data)
     for item in orderbooks_data:
         pair = item["pair"]
         directions = item.get("directions")
@@ -205,6 +213,24 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
                     error=format_error_details(e),
                 )
                 await send_system_error_notification("worker", f"process opportunity pair {pair.id}", e)
+
+
+def _filter_skippable_pairs(pairs):
+    active = []
+    for pair in pairs:
+        count = _pair_empty_counts.get(pair.pair_hash, 0)
+        if count >= settings.EMPTY_ORDERBOOK_THRESHOLD:
+            continue
+        active.append(pair)
+    return active
+
+
+def _update_empty_counts(checked_pairs, pairs_with_data):
+    for pair in checked_pairs:
+        if pair.pair_hash in pairs_with_data:
+            _pair_empty_counts.pop(pair.pair_hash, None)
+        else:
+            _pair_empty_counts[pair.pair_hash] = _pair_empty_counts.get(pair.pair_hash, 0) + 1
 
 
 def _candidate_markets_for_poly(poly_signature, matcher, pf_index):

@@ -78,7 +78,7 @@ class OrderbookService:
 
             directions = await self._build_direction_books(pair, pf_ob)
             if not directions:
-                log.warning(
+                log.info(
                     "directional books unavailable",
                     pair_id=pair.id,
                 )

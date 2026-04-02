@@ -20,9 +20,11 @@ from arbitrage_bot.tg_bot import handlers
 from arbitrage_bot.tg_bot.preferences import extract_pair_close_datetime
 
 log = get_logger("tg_bot")
+_shared_dp = None
 
 
 def setup_bot():
+    global _shared_dp
     token = settings.TELEGRAM_BOT_TOKEN
 
     if not token:
@@ -30,11 +32,12 @@ def setup_bot():
         return None, None
 
     bot = Bot(token=token)
-    dp = Dispatcher()
+    
+    if _shared_dp is None:
+        _shared_dp = Dispatcher()
+        _shared_dp.include_router(handlers.router)
 
-    dp.include_router(handlers.router)
-
-    return bot, dp
+    return bot, _shared_dp
 
 
 def _build_bot_commands():

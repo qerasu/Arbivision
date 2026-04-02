@@ -77,6 +77,7 @@ Arbivision — арбитражный бот, который мониторит 
 **Скрипт `stop.py`:**
 1. Читает PID из tempfile, отправляет SIGTERM → SIGKILL
 2. Останавливает Docker-контейнеры через `docker compose stop`
+*Примечание: запуск `python3 stop.py --drop` полностью удалит контейнеры и данные БД (volume) через `docker compose down -v`. Можно добавить флаг `--yes` для пропуска подтверждения.*
 
 ---
 
@@ -90,9 +91,10 @@ Arbivision — арбитражный бот, который мониторит 
 `POSTGRES_*` | Параметры подключения к PostgreSQL | `localhost:5432`
 `REDIS_*` | Параметры подключения к Redis | `localhost:6379`
 `PREDICT_FUN_API_KEY` | API-ключ для Predict.Fun | (пусто)
-`FEE_POLYMARKET_BPS` | Комиссия Polymarket в BPS | 0
-`FEE_PREDICT_FUN_BPS` | Комиссия Predict.Fun в BPS | 0
-`MARKET_REFRESH_SECONDS` | Интервал синхронизации рынков | 15 сек
+`FEE_POLYMARKET_BPS` | Комиссия Polymarket в BPS | 100.0 (1%)
+`FEE_PREDICT_FUN_BPS` | Комиссия Predict.Fun в BPS | 200.0 (2%)
+`MARKET_REFRESH_SECONDS` | Интервал синхронизации рынков | 60 сек
+`EMPTY_ORDERBOOK_THRESHOLD` | Лимит пустых стаканов до полного игнорирования пары | 3
 `ALERTS_DEDUPE_TTL_SECONDS` | TTL дедупликации алертов в Redis | 600 сек
 `ALERTS_DELTA_PROFIT_THRESHOLD_USD` | Минимальный прирост профита для повторного алерта | $3
 `ALERTS_DELTA_ROI_THRESHOLD_PERCENT` | Минимальный прирост ROI для повторного алерта | 0.5%
@@ -315,11 +317,14 @@ pf_asks   = [(0.45, 400), (0.47, 200), ...]   # sorted by price ASC
 
 На каждом шаге:
 1. Берём текущий уровень на обеих биржах: `(p_price, p_size)` и `(f_price, f_size)`
-2. Если `p_price + f_price ≥ 1.0` — арбитража нет, выходим
-3. Если `p_price + f_price < 1.0` — есть spread:
+2. Учитываем комиссии: вычисляем `net_p_price` и `net_f_price`
+3. Если `net_p_price + net_f_price ≥ 1.0` — арбитража нет или он убыточен, выходим
+4. Если `< 1.0` — есть spread (покупаем shares):
    - `take_size = min(p_size, f_size)` — сколько shares можно купить
    - Аккумулируем: shares, cost_poly, cost_pf, capital
    - Уменьшаем размер уровней, переходим к следующему при исчерпании
+
+*Примечание: если после сбора всех доступных ордеров и вычета всех комиссий итоговая `net_profit <= 0`, калькулятор возвращает `None` и такая возможность сразу отбрасывается.*
 
 **Результат:**
 ```python
@@ -495,8 +500,9 @@ Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
 ### Шаг 3: Обработка кандидатов
 
 1. Загружаются все пары со статусом `auto_approved` или `approved`
-2. Загружаются preferences пользователя
-3. `OrderbookService` параллельно (semaphore=4) загружает ордербуки
+2. **Смарт-фильтрация API-запросов:** бот проверяет количество неудачных попыток чтения стакана. Если ранее стакан пары возвращался пустым `EMPTY_ORDERBOOK_THRESHOLD` раз подряд, она перманентно игнорируется для экономии лимитов бирж.
+3. Загружаются preferences пользователя
+4. `OrderbookService` параллельно (semaphore=4) загружает ордербуки
 4. `ArbitrageCalculator` считает opportunities для каждого направления
 5. `AlertManager` фильтрует, дедуплицирует и создаёт алерты
 
@@ -594,8 +600,8 @@ TELEGRAM_SYSTEM_ERROR_CHAT_IDS=123456789
 
 ADMIN_API_TOKEN=your_admin_token
 
-MARKET_REFRESH_SECONDS=15
-FEE_POLYMARKET_BPS=0
-FEE_PREDICT_FUN_BPS=0
+MARKET_REFRESH_SECONDS=60
+FEE_POLYMARKET_BPS=100.0
+FEE_PREDICT_FUN_BPS=200.0
 ALERTS_DEDUPE_TTL_SECONDS=600
 ```
