@@ -64,16 +64,73 @@ class ArbOpportunity(Base):
     gross_roi = Column(Float, nullable=False)
     net_roi = Column(Float, nullable=False)
     calculation_json = Column(JSON, nullable=True)
+    fanout_status = Column(String, nullable=False, default="queued")
+    fanout_processed_at = Column(DateTime(timezone=True), nullable=True)
+    fanout_error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    status = Column(String, nullable=False, default="active")
+    role = Column(String, nullable=False, default="user")
+    plan_code = Column(String, nullable=False, default="free")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class TelegramChat(Base):
+    __tablename__ = "telegram_chats"
+    __table_args__ = (
+        UniqueConstraint("chat_id", name="uq_telegram_chats_chat_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    chat_id = Column(String, nullable=False)
+    chat_type = Column(String, nullable=False, default="private")
+    is_primary = Column(Boolean, nullable=False, default=True)
+    is_verified = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_preferences_user_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    min_roi_percent = Column(Float, nullable=True)
+    max_capital_usd = Column(Float, nullable=True)
+    max_days_to_close = Column(Integer, nullable=True)
+    muted = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    channel = Column(String, nullable=False)
+    destination = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="active")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
 
 class Alert(Base):
     __tablename__ = "alerts"
     id = Column(Integer, primary_key=True, autoincrement=True)
     opportunity_id = Column(Integer, ForeignKey("arb_opportunities.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=True)
     telegram_chat_id = Column(String, nullable=False)
     message_hash = Column(String, nullable=False)
     status = Column(String, default="queued", nullable=False)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True)
     sent_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

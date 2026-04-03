@@ -3,6 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from arbitrage_bot.models.orm import SettingsRecord
+from arbitrage_bot.models.orm import Subscription
+from arbitrage_bot.models.orm import TelegramChat
+from arbitrage_bot.models.orm import User
+from arbitrage_bot.models.orm import UserPreference
 
 GLOBAL_SETTINGS_KEY = "tg_alert_prefs:global"
 UI_STATE_KEY_PREFIX = "tg_ui_state:"
@@ -43,6 +47,18 @@ def default_preferences():
     return dict(DEFAULT_PREFERENCES)
 
 
+def _serialize_user_preferences(preferences):
+    if preferences is None:
+        return default_preferences()
+
+    return {
+        "min_roi_percent": preferences.min_roi_percent,
+        "max_capital_usd": preferences.max_capital_usd,
+        "max_days_to_close": preferences.max_days_to_close,
+        "muted": preferences.muted,
+    }
+
+
 async def get_global_preferences(db_session):
     stmt = select(SettingsRecord).where(SettingsRecord.key == GLOBAL_SETTINGS_KEY)
     result = await db_session.execute(stmt)
@@ -52,6 +68,181 @@ async def get_global_preferences(db_session):
     preferences = default_preferences()
     preferences.update(setting.value_json)
     return preferences
+
+
+async def ensure_telegram_user(db_session, chat_id, chat_type="private"):
+    chat_id_value = str(chat_id)
+    stmt = select(TelegramChat).where(TelegramChat.chat_id == chat_id_value)
+    result = await db_session.execute(stmt)
+    telegram_chat = result.scalars().first()
+
+    created = False
+    should_commit = False
+
+    if telegram_chat is None:
+        user = User()
+        db_session.add(user)
+        await db_session.flush()
+
+        telegram_chat = TelegramChat(
+            user_id=user.id,
+            chat_id=chat_id_value,
+            chat_type=chat_type,
+            is_primary=True,
+            is_verified=True,
+        )
+        db_session.add(telegram_chat)
+        db_session.add(
+            UserPreference(
+                user_id=user.id,
+                min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
+                max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
+                max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
+                muted=False,
+            )
+        )
+        db_session.add(
+            Subscription(
+                user_id=user.id,
+                channel="telegram",
+                destination=chat_id_value,
+                status="active",
+            )
+        )
+        created = True
+        should_commit = True
+    else:
+        pref_stmt = select(UserPreference).where(UserPreference.user_id == telegram_chat.user_id)
+        pref_result = await db_session.execute(pref_stmt)
+        preferences = pref_result.scalars().first()
+        if preferences is None:
+            db_session.add(
+                UserPreference(
+                    user_id=telegram_chat.user_id,
+                    min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
+                    max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
+                    max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
+                    muted=False,
+                )
+            )
+            should_commit = True
+
+        subscription_stmt = select(Subscription).where(
+            Subscription.user_id == telegram_chat.user_id,
+            Subscription.channel == "telegram",
+            Subscription.destination == chat_id_value,
+            Subscription.status == "active",
+        )
+        subscription_result = await db_session.execute(subscription_stmt)
+        subscription = subscription_result.scalars().first()
+        if subscription is None:
+            db_session.add(
+                Subscription(
+                    user_id=telegram_chat.user_id,
+                    channel="telegram",
+                    destination=chat_id_value,
+                    status="active",
+                )
+            )
+            should_commit = True
+
+    if should_commit:
+        await db_session.commit()
+
+    return telegram_chat
+
+
+async def get_user_preferences(db_session, chat_id, chat_type="private"):
+    telegram_chat = await ensure_telegram_user(db_session, chat_id, chat_type=chat_type)
+    stmt = select(UserPreference).where(UserPreference.user_id == telegram_chat.user_id)
+    result = await db_session.execute(stmt)
+    preferences = result.scalars().first()
+
+    if preferences is None:
+        preferences = UserPreference(
+            user_id=telegram_chat.user_id,
+            min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
+            max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
+            max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
+            muted=False,
+        )
+        db_session.add(preferences)
+        await db_session.commit()
+
+    return _serialize_user_preferences(preferences)
+
+
+async def set_user_preference(db_session, chat_id, field_name, field_value):
+    telegram_chat = await ensure_telegram_user(db_session, chat_id)
+    stmt = select(UserPreference).where(UserPreference.user_id == telegram_chat.user_id)
+    result = await db_session.execute(stmt)
+    preferences = result.scalars().first()
+
+    if preferences is None:
+        preferences = UserPreference(
+            user_id=telegram_chat.user_id,
+            min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
+            max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
+            max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
+            muted=False,
+        )
+        db_session.add(preferences)
+
+    setattr(preferences, field_name, field_value)
+    preferences.updated_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    return _serialize_user_preferences(preferences)
+
+
+async def reset_user_preferences(db_session, chat_id):
+    telegram_chat = await ensure_telegram_user(db_session, chat_id)
+    stmt = select(UserPreference).where(UserPreference.user_id == telegram_chat.user_id)
+    result = await db_session.execute(stmt)
+    preferences = result.scalars().first()
+
+    if preferences is None:
+        preferences = UserPreference(
+            user_id=telegram_chat.user_id,
+            muted=False,
+        )
+        db_session.add(preferences)
+
+    preferences.min_roi_percent = DEFAULT_PREFERENCES["min_roi_percent"]
+    preferences.max_capital_usd = DEFAULT_PREFERENCES["max_capital_usd"]
+    preferences.max_days_to_close = DEFAULT_PREFERENCES["max_days_to_close"]
+    preferences.updated_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    return _serialize_user_preferences(preferences)
+
+
+async def get_telegram_alert_targets(db_session):
+    stmt = (
+        select(Subscription, UserPreference, User)
+        .join(User, Subscription.user_id == User.id)
+        .outerjoin(UserPreference, UserPreference.user_id == User.id)
+        .where(
+            Subscription.channel == "telegram",
+            Subscription.status == "active",
+            User.status == "active",
+        )
+    )
+    result = await db_session.execute(stmt)
+    rows = result.all()
+    targets = []
+
+    for subscription, preferences, user in rows:
+        pref_values = default_preferences()
+        pref_values.update(_serialize_user_preferences(preferences))
+        targets.append(
+            {
+                "user_id": user.id,
+                "subscription_id": subscription.id,
+                "telegram_chat_id": subscription.destination,
+                "preferences": pref_values,
+            }
+        )
+
+    return targets
 
 
 async def get_ui_state(db_session, chat_id):
@@ -122,7 +313,7 @@ def format_preferences_text(preferences):
     max_capital_str = "off" if max_capital is None else _format_money(max_capital, fallback='')
     max_days = _format_days(preferences.get("max_days_to_close"))
     return (
-        "⚙️ Global alert settings\n\n"
+        "⚙️ Your alert settings\n\n"
         f"📈 Min ROI\nCurrent: {min_roi_str}\n\n"
         f"💵 Volume\nCurrent: {max_capital_str}\n\n"
         f"⏳ Max market end\nCurrent: {max_days}"
@@ -136,7 +327,7 @@ def format_home_text(preferences):
         "🔎 Arbitrage Scanner\n\n"
         "Monitors Polymarket and Predict.Fun for spread inefficiencies.\n\n"
         "🟢 Status: Active\n"
-        "Filters are applied globally to all alerts.\n\n"
+        "Filters are applied to your personal alert stream.\n\n"
         "Your filters:\n"
         f"• 📈 Min ROI: {_format_roi_value(preferences)}\n"
         f"• 💵 Max volume: {max_capital_str}\n"

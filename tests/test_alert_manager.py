@@ -119,7 +119,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-    async def test_creates_opportunity_and_alerts_then_updates_dedupe_cache(self):
+    async def test_creates_opportunity_and_queues_fanout_then_updates_dedupe_cache(self):
         db = FakeDbSession()
         redis = FakeRedis()
         manager = AlertManager(db)
@@ -137,21 +137,13 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
             "net_roi": 0.12,
         }
 
-        original_chat_ids = settings.TELEGRAM_DEFAULT_CHAT_IDS
-        settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001", "1002"]
-        try:
-            with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-                alerts = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
-        finally:
-            settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
+        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+            opportunity = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
 
-        self.assertEqual(len(alerts), 2)
+        self.assertEqual(opportunity.fanout_status, "queued")
         self.assertEqual(db.flush_calls, 1)
         self.assertEqual(db.commit_calls, 1)
         self.assertEqual(len(redis.setex_calls), 1)
-        self.assertEqual(alerts[0].status, "queued")
-        self.assertEqual(alerts[0].telegram_chat_id, "1001")
-        self.assertEqual(alerts[1].telegram_chat_id, "1002")
 
 
     async def test_skips_alert_when_profit_deltas_are_below_threshold(self):
@@ -186,7 +178,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(redis.setex_calls, [])
 
 
-    async def test_skips_alert_when_global_min_roi_blocks_it(self):
+    async def test_persists_opportunity_even_when_global_filters_would_later_block_fanout(self):
         db = FakeDbSession()
         db.global_preferences = OrmSettings(
             key="tg_alert_prefs:global",
@@ -212,11 +204,16 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
             "net_roi": 0.0001,
         }
 
-        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-            result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+        original_chat_ids = settings.TELEGRAM_DEFAULT_CHAT_IDS
+        settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
+        try:
+            with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+                result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+        finally:
+            settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
 
-        self.assertFalse(result)
-        self.assertEqual(db.commit_calls, 0)
+        self.assertEqual(result.fanout_status, "queued")
+        self.assertEqual(db.commit_calls, 1)
 
 
     async def test_rolls_back_and_clears_dedupe_if_commit_fails(self):
@@ -238,20 +235,15 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
             "net_roi": 0.12,
         }
 
-        original_chat_ids = settings.TELEGRAM_DEFAULT_CHAT_IDS
-        settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
-        try:
-            with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-                with self.assertRaisesRegex(RuntimeError, "commit failed"):
-                    await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
-        finally:
-            settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
+        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+            with self.assertRaisesRegex(RuntimeError, "commit failed"):
+                await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
 
         self.assertEqual(db.rollback_calls, 1)
         self.assertEqual(redis.data, {})
 
 
-    async def test_skips_alert_when_global_max_capital_blocks_it(self):
+    async def test_persists_opportunity_even_when_global_max_capital_would_block_fanout(self):
         db = FakeDbSession()
         db.global_preferences = OrmSettings(
             key="tg_alert_prefs:global",
@@ -277,14 +269,19 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
             "net_roi": 0.12,
         }
 
-        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-            result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+        original_chat_ids = settings.TELEGRAM_DEFAULT_CHAT_IDS
+        settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
+        try:
+            with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+                result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+        finally:
+            settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
 
-        self.assertFalse(result)
-        self.assertEqual(db.commit_calls, 0)
+        self.assertEqual(result.fanout_status, "queued")
+        self.assertEqual(db.commit_calls, 1)
 
 
-    async def test_uses_provided_preferences_without_fetching_from_db(self):
+    async def test_ignores_provided_preferences_and_only_queues_opportunity(self):
         db = FakeDbSession()
         redis = FakeRedis()
         manager = AlertManager(db)
@@ -306,13 +303,10 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
         try:
             with patch(
-                "arbitrage_bot.services.alert_manager.get_global_preferences",
-                side_effect=AssertionError("should not be called"),
-            ), patch(
                 "arbitrage_bot.services.alert_manager.get_redis",
                 return_value=redis,
             ):
-                alerts = await manager.process_opportunity(
+                opportunity = await manager.process_opportunity(
                     pair,
                     calc_result,
                     market_a=market_a,
@@ -326,4 +320,4 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
 
-        self.assertEqual(len(alerts), 1)
+        self.assertEqual(opportunity.fanout_status, "queued")

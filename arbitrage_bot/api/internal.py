@@ -39,11 +39,13 @@ async def status_check(db=Depends(get_db)):
         ).label("approved"),
     )
     opportunities_stmt = select(func.count(ArbOpportunity.id))
+    queued_fanout_stmt = select(func.count(ArbOpportunity.id)).where(ArbOpportunity.fanout_status.in_(("queued", "retry")))
     alerts_stmt = select(func.count(Alert.id)).where(Alert.status == "queued")
 
     markets_row = (await db.execute(markets_stmt)).one()
     pairs_row = (await db.execute(pairs_stmt)).one()
     opportunities_total = (await db.execute(opportunities_stmt)).scalar_one()
+    queued_fanout = (await db.execute(queued_fanout_stmt)).scalar_one()
     queued_alerts = (await db.execute(alerts_stmt)).scalar_one()
 
     return {
@@ -59,6 +61,7 @@ async def status_check(db=Depends(get_db)):
         },
         "opportunity_counts": {
             "total": opportunities_total,
+            "queued_fanout": queued_fanout,
         },
         "alert_counts": {
             "queued": queued_alerts,

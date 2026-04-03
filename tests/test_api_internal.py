@@ -55,6 +55,7 @@ class InternalApiTests(unittest.IsolatedAsyncioTestCase):
                 SimpleNamespace(total=100, active=42),
                 SimpleNamespace(total=12, approved=5),
                 3,
+                1,
                 2,
             ]
         )
@@ -68,6 +69,7 @@ class InternalApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["pair_counts"]["total"], 12)
         self.assertEqual(payload["pair_counts"]["approved"], 5)
         self.assertEqual(payload["opportunity_counts"]["total"], 3)
+        self.assertEqual(payload["opportunity_counts"]["queued_fanout"], 1)
         self.assertEqual(payload["alert_counts"]["queued"], 2)
 
 

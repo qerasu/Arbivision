@@ -9,7 +9,7 @@ from arbitrage_bot.adapters.base import BaseAdapter
 class PredictFunAdapter(BaseAdapter):
     base_url = "https://api.predict.fun/v1"
     page_limit = 100
-    max_pages = 100
+    max_pages = 200
     recent_start_id = None
     fallback_errors = (
         httpx.ConnectError,

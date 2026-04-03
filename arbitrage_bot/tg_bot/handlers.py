@@ -6,14 +6,15 @@ from aiogram.types import InlineKeyboardMarkup
 
 from arbitrage_bot.core.database import AsyncSessionLocal
 from arbitrage_bot.tg_bot.preferences import clear_ui_state
+from arbitrage_bot.tg_bot.preferences import ensure_telegram_user
 from arbitrage_bot.tg_bot.preferences import format_home_text
 from arbitrage_bot.tg_bot.preferences import format_preferences_text
 from arbitrage_bot.tg_bot.preferences import format_setting_prompt
 from arbitrage_bot.tg_bot.preferences import format_status_text
-from arbitrage_bot.tg_bot.preferences import get_global_preferences
 from arbitrage_bot.tg_bot.preferences import get_ui_state
-from arbitrage_bot.tg_bot.preferences import reset_global_preferences
-from arbitrage_bot.tg_bot.preferences import set_global_preference
+from arbitrage_bot.tg_bot.preferences import get_user_preferences
+from arbitrage_bot.tg_bot.preferences import reset_user_preferences
+from arbitrage_bot.tg_bot.preferences import set_user_preference
 from arbitrage_bot.tg_bot.preferences import set_ui_state
 
 router = Router()
@@ -28,7 +29,12 @@ _SETTINGS_FIELD_ALIASES = {
 @router.message(Command("start"))
 async def cmd_start(message):
     async with AsyncSessionLocal() as session:
-        preferences = await get_global_preferences(session)
+        await ensure_telegram_user(
+            session,
+            message.chat.id,
+            chat_type=getattr(message.chat, "type", "private"),
+        )
+        preferences = await get_user_preferences(session, message.chat.id)
         await clear_ui_state(session, message.chat.id)
 
     await message.answer(
@@ -40,7 +46,7 @@ async def cmd_start(message):
 @router.message(Command("status"))
 async def cmd_status(message):
     async with AsyncSessionLocal() as session:
-        preferences = await get_global_preferences(session)
+        preferences = await get_user_preferences(session, message.chat.id)
         await clear_ui_state(session, message.chat.id)
 
     await message.answer(
@@ -52,7 +58,7 @@ async def cmd_status(message):
 @router.message(Command("settings"))
 async def cmd_settings(message):
     async with AsyncSessionLocal() as session:
-        preferences = await get_global_preferences(session)
+        preferences = await get_user_preferences(session, message.chat.id)
         await clear_ui_state(session, message.chat.id)
 
     await message.answer(
@@ -68,7 +74,7 @@ async def on_nav_callback(callback):
 
     async with AsyncSessionLocal() as session:
         if action == "home":
-            preferences = await get_global_preferences(session)
+            preferences = await get_user_preferences(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
@@ -76,7 +82,7 @@ async def on_nav_callback(callback):
                 reply_markup=_build_home_keyboard(),
             )
         elif action == "status":
-            preferences = await get_global_preferences(session)
+            preferences = await get_user_preferences(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
@@ -84,7 +90,7 @@ async def on_nav_callback(callback):
                 reply_markup=_build_status_keyboard(),
             )
         elif action == "settings":
-            preferences = await get_global_preferences(session)
+            preferences = await get_user_preferences(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
@@ -92,12 +98,12 @@ async def on_nav_callback(callback):
                 reply_markup=_build_settings_keyboard(),
             )
         elif action == "reset":
-            preferences = await reset_global_preferences(session)
+            preferences = await reset_user_preferences(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
-                "Global settings reset.\n\n"
-                "All Telegram filters are disabled, so the bot will send every alert it finds.\n\n"
+                "Your settings were reset.\n\n"
+                "All Telegram filters are disabled for your chat, so you will receive every alert that passes system checks.\n\n"
                 f"{format_preferences_text(preferences)}",
                 reply_markup=_build_settings_keyboard(),
             )
@@ -110,7 +116,7 @@ async def on_edit_callback(callback):
     field_name = callback.data.split(":", 1)[1]
 
     async with AsyncSessionLocal() as session:
-        preferences = await get_global_preferences(session)
+        preferences = await get_user_preferences(session, callback.message.chat.id)
         await set_ui_state(
             session,
             callback.message.chat.id,
@@ -177,7 +183,7 @@ async def on_plain_text_setting(message):
 async def _apply_setting_update(message, field_name, value):
     async with AsyncSessionLocal() as session:
         ui_state = await get_ui_state(session, message.chat.id)
-        preferences = await set_global_preference(session, field_name, value)
+        preferences = await set_user_preference(session, message.chat.id, field_name, value)
         await clear_ui_state(session, message.chat.id)
 
     prompt_message_id = None

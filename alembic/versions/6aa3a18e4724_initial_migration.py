@@ -6,7 +6,6 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
-
 def upgrade():
     op.create_table('blacklist_rules',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -66,6 +65,51 @@ def upgrade():
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('pair_hash')
     )
+    op.create_table('users',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('status', sa.String(), nullable=False),
+    sa.Column('role', sa.String(), nullable=False),
+    sa.Column('plan_code', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('telegram_chats',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('chat_id', sa.String(), nullable=False),
+    sa.Column('chat_type', sa.String(), nullable=False),
+    sa.Column('is_primary', sa.Boolean(), nullable=False),
+    sa.Column('is_verified', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('chat_id', name='uq_telegram_chats_chat_id')
+    )
+    op.create_table('user_preferences',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('min_roi_percent', sa.Float(), nullable=True),
+    sa.Column('max_capital_usd', sa.Float(), nullable=True),
+    sa.Column('max_days_to_close', sa.Integer(), nullable=True),
+    sa.Column('muted', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('user_id', name='uq_user_preferences_user_id')
+    )
+    op.create_table('subscriptions',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('channel', sa.String(), nullable=False),
+    sa.Column('destination', sa.String(), nullable=False),
+    sa.Column('status', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
     op.create_table('arb_opportunities',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('market_pair_id', sa.Integer(), nullable=False),
@@ -81,27 +125,42 @@ def upgrade():
     sa.Column('gross_roi', sa.Float(), nullable=False),
     sa.Column('net_roi', sa.Float(), nullable=False),
     sa.Column('calculation_json', sa.JSON(), nullable=True),
+    sa.Column('fanout_status', sa.String(), nullable=False, server_default='queued'),
+    sa.Column('fanout_processed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('fanout_error_message', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['market_pair_id'], ['market_pairs.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.alter_column('arb_opportunities', 'fanout_status', server_default=None)
+
     op.create_table('alerts',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('opportunity_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=True),
+    sa.Column('subscription_id', sa.Integer(), nullable=True),
     sa.Column('telegram_chat_id', sa.String(), nullable=False),
     sa.Column('message_hash', sa.String(), nullable=False),
     sa.Column('status', sa.String(), nullable=False),
+    sa.Column('attempt_count', sa.Integer(), nullable=False, server_default='0'),
+    sa.Column('next_retry_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('sent_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('error_message', sa.Text(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['opportunity_id'], ['arb_opportunities.id'], ),
+    sa.ForeignKeyConstraint(['subscription_id'], ['subscriptions.id'], name='fk_alerts_subscription_id_subscriptions'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name='fk_alerts_user_id_users'),
     sa.PrimaryKeyConstraint('id')
     )
-
+    op.alter_column('alerts', 'attempt_count', server_default=None)
 
 def downgrade():
     op.drop_table('alerts')
     op.drop_table('arb_opportunities')
+    op.drop_table('subscriptions')
+    op.drop_table('user_preferences')
+    op.drop_table('telegram_chats')
+    op.drop_table('users')
     op.drop_table('market_pairs')
     op.drop_table('market_entities')
     op.drop_table('settings')

@@ -57,7 +57,7 @@ Arbivision — арбитражный бот, который мониторит 
          └──────────────┘            └──────────────────┘
 ```
 
-Все компоненты запускаются как asyncio-таски внутри FastAPI `lifespan`. При shutdown каждый таск корректно отменяется.
+По умолчанию все компоненты запускаются как asyncio-таски внутри FastAPI `lifespan`. При shutdown каждый таск корректно отменяется. Для подготовки к масштабированию также поддержан split-runtime режим через `APP_RUNTIME_MODE`.
 
 ---
 
@@ -74,6 +74,17 @@ Arbivision — арбитражный бот, который мониторит 
 1. Создаёт `asyncio.Task` для `run_sync_loop()` (worker)
 2. Создаёт `asyncio.Task` для `start_polling()` (Telegram-бот)
 3. При shutdown отменяет оба таска и закрывает shared-сессию system_notifier
+
+**Split runtime:**
+1. `APP_RUNTIME_MODE=all` — worker + fanout + telegram внутри API-процесса
+2. `APP_RUNTIME_MODE=worker` — внутри `uvicorn` запускается только worker
+3. `APP_RUNTIME_MODE=fanout` — внутри `uvicorn` запускается только fanout loop
+4. `APP_RUNTIME_MODE=telegram` — внутри `uvicorn` запускается только telegram loop
+5. Для полностью раздельного запуска можно использовать:
+   `python -m arbitrage_bot.run_worker`
+   `python -m arbitrage_bot.run_fanout`
+   `python -m arbitrage_bot.run_telegram`
+   `uvicorn arbitrage_bot.api_app:app`
 
 **Скрипт `stop.py`:**
 1. Читает PID из tempfile, отправляет SIGTERM → SIGKILL

@@ -9,8 +9,8 @@ from arbitrage_bot.adapters.base import BaseAdapter
 class PolymarketAdapter(BaseAdapter):
     base_url = "https://gamma-api.polymarket.com"
     clob_base_url = "https://clob.polymarket.com"
-    page_limit = 100
-    max_pages = 100
+    page_limit = 500
+    max_pages = 200
     fallback_errors = (
         httpx.ConnectError,
         httpx.ConnectTimeout,

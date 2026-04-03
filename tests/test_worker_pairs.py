@@ -1,8 +1,10 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 from arbitrage_bot.services.matcher import MatcherService
-from arbitrage_bot.worker import _candidate_markets_for_poly, _mark_stale_pairs, _reconcile_market_pairs
+from arbitrage_bot.worker import _candidate_markets_for_poly, _filter_skippable_pairs, _mark_stale_pairs, _reconcile_market_pairs, _update_empty_counts
 
 
 class WorkerPairLifecycleTests(unittest.TestCase):
@@ -123,3 +125,55 @@ class WorkerPairLifecycleTests(unittest.TestCase):
         candidates = _candidate_markets_for_poly(poly_signature, matcher, pf_index)
 
         self.assertEqual(candidates[0]["market"].id, 10)
+
+
+class FakeRedis:
+    def __init__(self):
+        self.data = {}
+
+
+    async def get(self, key):
+        return self.data.get(key)
+
+
+    async def setex(self, key, ttl, value):
+        self.data[key] = value
+
+
+    async def delete(self, key):
+        self.data.pop(key, None)
+
+
+class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_filter_skippable_pairs_reads_threshold_from_redis(self):
+        fake_redis = FakeRedis()
+        fake_redis.data["worker:pair-empty-count:pair-1"] = "3"
+        pairs = [
+            SimpleNamespace(pair_hash="pair-1"),
+            SimpleNamespace(pair_hash="pair-2"),
+        ]
+
+        with patch(
+            "arbitrage_bot.worker.get_redis",
+            new=AsyncMock(return_value=fake_redis),
+        ):
+            active_pairs = await _filter_skippable_pairs(pairs)
+
+        self.assertEqual([pair.pair_hash for pair in active_pairs], ["pair-2"])
+
+
+    async def test_update_empty_counts_persists_to_redis(self):
+        fake_redis = FakeRedis()
+        checked_pairs = [
+            SimpleNamespace(pair_hash="pair-1"),
+            SimpleNamespace(pair_hash="pair-2"),
+        ]
+
+        with patch(
+            "arbitrage_bot.worker.get_redis",
+            new=AsyncMock(return_value=fake_redis),
+        ):
+            await _update_empty_counts(checked_pairs, {"pair-2"})
+
+        self.assertEqual(fake_redis.data["worker:pair-empty-count:pair-1"], "1")
+        self.assertNotIn("worker:pair-empty-count:pair-2", fake_redis.data)

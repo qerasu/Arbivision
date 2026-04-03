@@ -67,7 +67,37 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
     async def test_skips_duplicate_error_during_cooldown(self):
         fake_bot = AsyncMock()
 
-        with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot):
+        fake_redis = AsyncMock()
+        fake_redis.set = AsyncMock(side_effect=[True, None])
+
+        with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot), patch(
+            "arbitrage_bot.services.system_notifier.get_redis",
+            new=AsyncMock(return_value=fake_redis),
+        ):
+            first = await system_notifier.send_system_error_notification(
+                "worker",
+                "sync loop",
+                RuntimeError("boom"),
+            )
+            second = await system_notifier.send_system_error_notification(
+                "worker",
+                "sync loop",
+                RuntimeError("boom"),
+            )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        fake_bot.send_message.assert_awaited_once()
+        self.assertEqual(fake_redis.set.await_count, 2)
+
+
+    async def test_falls_back_to_memory_dedupe_when_redis_fails(self):
+        fake_bot = AsyncMock()
+
+        with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot), patch(
+            "arbitrage_bot.services.system_notifier.get_redis",
+            new=AsyncMock(side_effect=RuntimeError("redis down")),
+        ):
             first = await system_notifier.send_system_error_notification(
                 "worker",
                 "sync loop",

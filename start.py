@@ -25,6 +25,10 @@ def _python_exec():
     return sys.executable
 
 
+def _runtime_mode():
+    return os.environ.get("APP_RUNTIME_MODE", "all").strip().lower() or "all"
+
+
 def _pidfile():
     return Path(tempfile.gettempdir()) / 'arbitrage_alert_bot.pid'
 
@@ -201,6 +205,7 @@ def main():
 
     host = os.environ.get("APP_HOST", "127.0.0.1")
     port = _read_int_env("APP_PORT", 8000)
+    runtime_mode = _runtime_mode()
 
     if _is_port_in_use(host, port):
         print(f'ERROR: TCP port {host}:{port} is already in use')
@@ -209,6 +214,8 @@ def main():
         print(f'Or change APP_PORT in {ENV_FILE_PATH}')
 
         return
+
+    print(f'runtime mode: {runtime_mode}')
 
     cmd = [
         python_exec,

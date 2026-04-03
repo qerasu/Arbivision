@@ -102,7 +102,7 @@ class TelegramPreferencesTests(unittest.TestCase):
             }
         )
 
-        self.assertIn("Global alert settings", text)
+        self.assertIn("Your alert settings", text)
         self.assertIn("Min ROI\nCurrent: 2.50%", text)
         self.assertIn("Volume\nCurrent: $500", text)
         self.assertIn("Max market end\nCurrent: 7 days", text)

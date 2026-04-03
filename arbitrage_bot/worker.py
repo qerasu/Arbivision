@@ -2,6 +2,7 @@ import asyncio
 import time
 from collections import defaultdict
 from arbitrage_bot.core.database import AsyncSessionLocal
+from arbitrage_bot.core.redis import get_redis
 from arbitrage_bot.models.orm import Market, MarketPair
 from arbitrage_bot.services.ingestion import IngestionService
 from arbitrage_bot.services.matcher import MatcherService
@@ -11,7 +12,6 @@ from arbitrage_bot.services.alert_manager import AlertManager
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.services.system_notifier import format_error_details, send_system_error_notification
-from arbitrage_bot.tg_bot.preferences import get_global_preferences
 from sqlalchemy.future import select
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +20,7 @@ log = get_logger("worker")
 _EMPTY_COUNTS_MAX_SIZE = 1000
 # pair_hash -> (count, monotonic_timestamp)
 _pair_empty_counts = {}
+_EMPTY_COUNT_TTL_SECONDS = max(settings.MARKET_REFRESH_SECONDS * 20, 3600)
 
 
 async def run_sync_loop():
@@ -92,6 +93,8 @@ async def _upsert_market_pairs(db, matcher):
         active_stmt = select(MarketPair).where(MarketPair.status.in_(["auto_approved", "approved"]))
         existing_pairs = (await db.execute(active_stmt)).scalars().all()
         has_changes = _mark_stale_pairs(existing_pairs)
+        if has_changes:
+            await _clear_empty_counts_for_pairs(existing_pairs)
         if not has_changes:
             return
         try:
@@ -109,6 +112,9 @@ async def _upsert_market_pairs(db, matcher):
     )
     existing_pairs = (await db.execute(stmt)).scalars().all()
     new_pairs, has_updates = _reconcile_market_pairs(existing_pairs, matched_pairs)
+    if has_updates:
+        stale_pairs = [pair for pair in existing_pairs if pair.status == "stale"]
+        await _clear_empty_counts_for_pairs(stale_pairs)
     if not new_pairs and not has_updates:
         return
 
@@ -171,7 +177,6 @@ def _mark_stale_pairs(pairs):
     for pair in pairs:
         if pair.status in active_statuses:
             pair.status = "stale"
-            _pair_empty_counts.pop(pair.pair_hash, None)
             changed = True
 
     return changed
@@ -185,16 +190,15 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
     if not pairs:
         return
 
-    active_pairs = _filter_skippable_pairs(pairs)
+    active_pairs = await _filter_skippable_pairs(pairs)
     if not active_pairs:
         return
 
-    preferences = await get_global_preferences(db)
     market_map = await _load_market_map_for_pairs(db, active_pairs)
     orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs(active_pairs, db)
 
     pairs_with_data = {item["pair"].pair_hash for item in orderbooks_data}
-    _update_empty_counts(active_pairs, pairs_with_data)
+    await _update_empty_counts(active_pairs, pairs_with_data)
     for item in orderbooks_data:
         pair = item["pair"]
         directions = item.get("directions")
@@ -211,7 +215,6 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
                     calc_result,
                     market_a=market_a,
                     market_b=market_b,
-                    preferences=preferences,
                 )
             except Exception as e:
                 log.error(
@@ -222,25 +225,78 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
                 await send_system_error_notification("worker", f"process opportunity pair {pair.id}", e)
 
 
-def _filter_skippable_pairs(pairs):
+def _pair_empty_count_key(pair_hash):
+    return f"worker:pair-empty-count:{pair_hash}"
+
+
+async def _get_empty_count(pair_hash):
+    try:
+        redis = await get_redis()
+        if redis is not None:
+            value = await redis.get(_pair_empty_count_key(pair_hash))
+            if value is None:
+                return 0
+            return int(value)
+    except Exception:
+        pass
+
+    entry = _pair_empty_counts.get(pair_hash)
+    if not entry:
+        return 0
+    return int(entry[0])
+
+
+async def _set_empty_count(pair_hash, count):
+    now = time.monotonic()
+    try:
+        redis = await get_redis()
+        if redis is not None:
+            await redis.setex(
+                _pair_empty_count_key(pair_hash),
+                _EMPTY_COUNT_TTL_SECONDS,
+                str(count),
+            )
+    except Exception:
+        _pair_empty_counts[pair_hash] = (count, now)
+    else:
+        _pair_empty_counts[pair_hash] = (count, now)
+
+
+async def _clear_empty_count(pair_hash):
+    try:
+        redis = await get_redis()
+        if redis is not None:
+            await redis.delete(_pair_empty_count_key(pair_hash))
+    except Exception:
+        pass
+
+    _pair_empty_counts.pop(pair_hash, None)
+
+
+async def _clear_empty_counts_for_pairs(pairs):
+    for pair in pairs:
+        if getattr(pair, "status", None) == "stale":
+            await _clear_empty_count(pair.pair_hash)
+
+
+async def _filter_skippable_pairs(pairs):
     active = []
     for pair in pairs:
-        entry = _pair_empty_counts.get(pair.pair_hash)
-        if entry and entry[0] >= settings.EMPTY_ORDERBOOK_THRESHOLD:
+        empty_count = await _get_empty_count(pair.pair_hash)
+        if empty_count >= settings.EMPTY_ORDERBOOK_THRESHOLD:
             continue
         active.append(pair)
     return active
 
 
-def _update_empty_counts(checked_pairs, pairs_with_data):
+async def _update_empty_counts(checked_pairs, pairs_with_data):
     now = time.monotonic()
     for pair in checked_pairs:
         if pair.pair_hash in pairs_with_data:
-            _pair_empty_counts.pop(pair.pair_hash, None)
+            await _clear_empty_count(pair.pair_hash)
         else:
-            prev = _pair_empty_counts.get(pair.pair_hash)
-            prev_count = prev[0] if prev else 0
-            _pair_empty_counts[pair.pair_hash] = (prev_count + 1, now)
+            prev_count = await _get_empty_count(pair.pair_hash)
+            await _set_empty_count(pair.pair_hash, prev_count + 1)
 
     # evict oldest entries when dict grows too large
     if len(_pair_empty_counts) > _EMPTY_COUNTS_MAX_SIZE:

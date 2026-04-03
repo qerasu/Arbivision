@@ -216,7 +216,7 @@ class TelegramBotStatusCommandTests(unittest.IsolatedAsyncioTestCase):
             "arbitrage_bot.tg_bot.handlers.AsyncSessionLocal",
             return_value=FakeSessionContext(),
         ), patch(
-            "arbitrage_bot.tg_bot.handlers.get_global_preferences",
+            "arbitrage_bot.tg_bot.handlers.get_user_preferences",
             new=AsyncMock(
                 return_value={
                     "min_roi_percent": None,
@@ -253,7 +253,7 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ), patch(
-            "arbitrage_bot.tg_bot.handlers.set_global_preference",
+            "arbitrage_bot.tg_bot.handlers.set_user_preference",
             new=AsyncMock(
                 return_value={
                     "min_roi_percent": 1.5,
@@ -294,7 +294,7 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ), patch(
-            "arbitrage_bot.tg_bot.handlers.set_global_preference",
+            "arbitrage_bot.tg_bot.handlers.set_user_preference",
             new=AsyncMock(
                 return_value={
                     "min_roi_percent": 1.5,

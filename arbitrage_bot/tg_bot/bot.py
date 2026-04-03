@@ -2,6 +2,7 @@ import asyncio
 import html
 import math
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
@@ -44,7 +45,7 @@ def _build_bot_commands():
     return [
         BotCommand(command="start", description="open menu"),
         BotCommand(command="status", description="show current bot status"),
-        BotCommand(command="settings", description="open global alert settings"),
+        BotCommand(command="settings", description="open your alert settings"),
     ]
 
 
@@ -219,8 +220,35 @@ async def _send_alert(bot, alert, opportunity, pair, market_a, market_b_row):
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
     alert.status = "sent"
+    alert.attempt_count = int(getattr(alert, "attempt_count", 0) or 0) + 1
+    alert.next_retry_at = None
     alert.sent_at = datetime.now(timezone.utc)
     alert.error_message = None
+
+
+def _should_attempt_delivery(alert, now):
+    next_retry_at = getattr(alert, "next_retry_at", None)
+    if next_retry_at is None:
+        return True
+
+    if next_retry_at.tzinfo is None:
+        next_retry_at = next_retry_at.replace(tzinfo=timezone.utc)
+
+    return next_retry_at <= now
+
+
+def _mark_alert_retry(alert, exc, now):
+    attempt_count = int(getattr(alert, "attempt_count", 0) or 0) + 1
+    alert.attempt_count = attempt_count
+    alert.error_message = str(exc)
+
+    if attempt_count >= settings.TELEGRAM_DELIVERY_MAX_ATTEMPTS:
+        alert.status = "failed"
+        alert.next_retry_at = None
+        return
+
+    alert.status = "retry"
+    alert.next_retry_at = now + timedelta(seconds=settings.TELEGRAM_DELIVERY_RETRY_SECONDS)
 
 
 async def _drain_queued_alerts(bot):
@@ -229,6 +257,7 @@ async def _drain_queued_alerts(bot):
     while True:
         try:
             async with AsyncSessionLocal() as session:
+                now = datetime.now(timezone.utc)
                 stmt = (
                     select(Alert, ArbOpportunity, MarketPair, Market, market_b_alias)
                     .join(ArbOpportunity, Alert.opportunity_id == ArbOpportunity.id)
@@ -243,14 +272,12 @@ async def _drain_queued_alerts(bot):
                 rows = result.all()
 
                 for alert, opportunity, pair, market_a, market_b_row in rows:
+                    if not _should_attempt_delivery(alert, now):
+                        continue
                     try:
                         await _send_alert(bot, alert, opportunity, pair, market_a, market_b_row)
                     except Exception as exc:
-                        if alert.status == "retry":
-                            alert.status = "failed"
-                        else:
-                            alert.status = "retry"
-                        alert.error_message = str(exc)
+                        _mark_alert_retry(alert, exc, now)
                     await session.commit()
         except asyncio.CancelledError:
             raise

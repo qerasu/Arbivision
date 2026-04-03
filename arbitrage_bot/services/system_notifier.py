@@ -1,10 +1,12 @@
 import asyncio
+import hashlib
 from time import monotonic
 
 from aiogram import Bot
 
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.logging import get_logger
+from arbitrage_bot.core.redis import get_redis
 
 _last_sent_at = {}
 _MAX_DEDUPE_ENTRIES = 500
@@ -95,6 +97,30 @@ def _should_skip_notification(dedupe_key):
     return False
 
 
+def _system_error_redis_key(dedupe_key):
+    digest = hashlib.sha1(dedupe_key.encode("utf-8")).hexdigest()
+    return f"system-error-dedupe:{digest}"
+
+
+async def _should_skip_notification_async(dedupe_key):
+    cooldown = settings.TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS
+    if cooldown <= 0:
+        return False
+
+    try:
+        redis = await get_redis()
+        if redis is not None:
+            redis_key = _system_error_redis_key(dedupe_key)
+            created = await redis.set(redis_key, "1", ex=max(1, int(cooldown)), nx=True)
+            if created:
+                return False
+            return True
+    except Exception:
+        pass
+
+    return _should_skip_notification(dedupe_key)
+
+
 def _get_shared_bot():
     global _shared_bot
     token = settings.TELEGRAM_BOT_TOKEN
@@ -122,7 +148,7 @@ async def send_system_error_notification(source, operation, error):
     details = format_error_details(error)
     dedupe_key = f"{source}:{operation}:{type(error).__name__}:{details}"
     
-    if _should_skip_notification(dedupe_key):
+    if await _should_skip_notification_async(dedupe_key):
         return False
 
     message = _format_system_error_message(source, operation, error)

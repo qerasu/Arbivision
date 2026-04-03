@@ -1,24 +1,28 @@
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from arbitrage_bot.api import internal
-from arbitrage_bot.worker import run_sync_loop
-from arbitrage_bot.tg_bot.bot import start_polling
-from arbitrage_bot.services.system_notifier import close_shared_bot
+from arbitrage_bot.core.config import settings
+from arbitrage_bot.runtime import run_fanout_runtime
+from arbitrage_bot.runtime import managed_runtime
+from arbitrage_bot.runtime import run_telegram_runtime
+from arbitrage_bot.runtime import run_worker_runtime
 
 
 @asynccontextmanager
 async def lifespan(_app):
-    sync_task = asyncio.create_task(run_sync_loop())
-    bot_task = asyncio.create_task(start_polling())
+    coroutines = []
 
-    try:
+    if settings.APP_RUNTIME_MODE in {"all", "worker"}:
+        coroutines.append(run_worker_runtime())
+
+    if settings.APP_RUNTIME_MODE in {"all", "fanout"}:
+        coroutines.append(run_fanout_runtime())
+
+    if settings.APP_RUNTIME_MODE in {"all", "telegram"}:
+        coroutines.append(run_telegram_runtime())
+
+    async with managed_runtime(*coroutines):
         yield
-    finally:
-        sync_task.cancel()
-        bot_task.cancel()
-        await asyncio.gather(sync_task, bot_task, return_exceptions=True)
-        await close_shared_bot()
 
 app = FastAPI(title="Arbitrage Alert Bot API", lifespan=lifespan)
 

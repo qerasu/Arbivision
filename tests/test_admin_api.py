@@ -53,6 +53,7 @@ def _print_summary(name, payload):
             f" pairs={pairs.get('total', 0)}"
             f" approved={pairs.get('approved', 0)}"
             f" opportunities={opportunities.get('total', 0)}"
+            f" queued_fanout={opportunities.get('queued_fanout', 0)}"
             f" queued_alerts={alerts.get('queued', 0)}"
         )
         return
