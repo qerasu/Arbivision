@@ -238,6 +238,7 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
         directions = item.get("directions")
         calc_results = calculator.calculate_opportunities(directions)
         if not calc_results:
+            incr_counter("calculator.drop.no_profitable_directions")
             continue
 
         market_a = market_map.get(pair.market_id_a)

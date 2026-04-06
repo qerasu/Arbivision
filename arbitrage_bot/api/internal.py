@@ -1,15 +1,20 @@
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.future import select
-from arbitrage_bot.core.database import get_db
 from arbitrage_bot.core.config import settings
+from arbitrage_bot.core.database import get_db
 from arbitrage_bot.core.observability import snapshot_and_reset_counters
 from arbitrage_bot.core.observability import snapshot_counters
 from arbitrage_bot.models.orm import Alert
 from arbitrage_bot.models.orm import ArbOpportunity
 from arbitrage_bot.models.orm import Market
 from arbitrage_bot.models.orm import MarketPair
+from arbitrage_bot.services.calculator import ArbitrageCalculator
 from arbitrage_bot.services.matcher import MatcherService
+from arbitrage_bot.services.orderbook import OrderbookService
+from arbitrage_bot.tg_bot.preferences import filter_reason_for_preferences
+from arbitrage_bot.tg_bot.preferences import get_global_preferences
+from arbitrage_bot.tg_bot.preferences import get_telegram_alert_targets
 
 router = APIRouter()
 
@@ -127,6 +132,129 @@ async def approve_pair(pair_id, db=Depends(get_db), _=Depends(require_admin_toke
     pair.status = "approved"
     await db.commit()
     return {"status": "success", "pair_id": pair_id}
+
+
+async def _load_diagnostic_targets(db):
+    targets = await get_telegram_alert_targets(db)
+    if targets:
+        return targets
+
+    legacy_preferences = await get_global_preferences(db)
+    return [
+        {
+            "user_id": None,
+            "subscription_id": None,
+            "telegram_chat_id": chat_id,
+            "preferences": legacy_preferences,
+        }
+        for chat_id in settings.TELEGRAM_DEFAULT_CHAT_IDS
+    ]
+
+
+def _diagnose_filter_reason(target, calc_result, market_a, market_b):
+    preferences = target.get("preferences") or {}
+    if preferences.get("muted"):
+        return "muted"
+
+    opportunity = type("Opportunity", (), calc_result)()
+    return filter_reason_for_preferences(
+        opportunity,
+        market_a,
+        market_b,
+        preferences,
+    )
+
+
+@router.get("/admin/pairs/{pair_id}/diagnose")
+async def diagnose_pair(pair_id, db=Depends(get_db), _=Depends(require_admin_token)):
+    pair_stmt = select(MarketPair).where(MarketPair.id == pair_id)
+    pair_result = await db.execute(pair_stmt)
+    pair = pair_result.scalars().first()
+    if pair is None:
+        return {"status": "not_found", "pair_id": pair_id}
+
+    markets_stmt = select(Market).where(Market.id.in_([pair.market_id_a, pair.market_id_b]))
+    markets_result = await db.execute(markets_stmt)
+    markets = {market.id: market for market in markets_result.scalars().all()}
+    market_a = markets.get(pair.market_id_a)
+    market_b = markets.get(pair.market_id_b)
+
+    orderbook_service = OrderbookService()
+    calculator = ArbitrageCalculator()
+    try:
+        diagnosis = await orderbook_service.diagnose_pair(pair, db)
+    finally:
+        await orderbook_service.close()
+
+    if diagnosis["stage"] != "ready":
+        return {
+            "status": "ok",
+            "pair_id": pair_id,
+            "diagnosis": diagnosis,
+        }
+
+    calc_results = calculator.calculate_opportunities(diagnosis["directions"])
+    if not calc_results:
+        return {
+            "status": "ok",
+            "pair_id": pair_id,
+            "diagnosis": {
+                "stage": "calculator",
+                "reason": "no_profitable_directions",
+                "directions": list(diagnosis["directions"].keys()),
+            },
+        }
+
+    targets = await _load_diagnostic_targets(db)
+    target_diagnostics = []
+    eligible_target_count = 0
+
+    for target in targets:
+        target_reasons = []
+        for calc_result in calc_results:
+            reason = _diagnose_filter_reason(
+                target,
+                calc_result,
+                market_a,
+                market_b,
+            )
+            if reason is None:
+                eligible_target_count += 1
+            target_reasons.append(
+                {
+                    "direction": calc_result["direction"],
+                    "reason": reason,
+                }
+            )
+
+        target_diagnostics.append(
+            {
+                "telegram_chat_id": target.get("telegram_chat_id"),
+                "user_id": target.get("user_id"),
+                "results": target_reasons,
+            }
+        )
+
+    diagnosis = {
+        "stage": "fanout" if eligible_target_count == 0 else "ready",
+        "reason": "filtered_by_preferences" if eligible_target_count == 0 else None,
+        "opportunities": [
+            {
+                "direction": result["direction"],
+                "capital_required": result["capital_required"],
+                "net_profit": result["net_profit"],
+                "net_roi": result["net_roi"],
+            }
+            for result in calc_results
+        ],
+        "targets": target_diagnostics,
+    }
+
+    return {
+        "status": "ok",
+        "pair_id": pair_id,
+        "diagnosis": diagnosis,
+    }
 
 
 @router.get("/admin/matcher/debug")

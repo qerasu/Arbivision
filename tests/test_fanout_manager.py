@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from sqlalchemy.exc import IntegrityError
 
+from arbitrage_bot.core.observability import reset_counters
+from arbitrage_bot.core.observability import snapshot_counters
 from arbitrage_bot.models.orm import Alert
 from arbitrage_bot.models.orm import Market
 from arbitrage_bot.services import fanout_manager as fanout_manager_module
@@ -87,6 +89,7 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         fanout_manager_module._delivery_targets_cache["value"] = None
         fanout_manager_module._delivery_targets_cache["expires_at"] = 0.0
+        reset_counters()
 
 
     async def test_fanout_creates_alerts_only_for_eligible_targets(self):
@@ -162,6 +165,131 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.added), 1)
         self.assertIsInstance(db.added[0], Alert)
         self.assertEqual(db.added[0].telegram_chat_id, "1001")
+        self.assertNotIn("fanout.drop.min_roi", snapshot_counters())
+
+
+    async def test_fanout_counts_muted_target_drop_reason(self):
+        db = FakeDbSession()
+        manager = FanoutManager(db)
+        opportunity = SimpleNamespace(
+            id=7,
+            net_roi=0.12,
+            capital_required=10.0,
+            net_profit=5.0,
+        )
+        pair = SimpleNamespace(id=5)
+        market_a = Market(
+            id=101,
+            platform="polymarket",
+            platform_market_id="poly-101",
+            status="active",
+            tradable=True,
+            title="market a",
+            normalized_title="market a",
+            description="",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="",
+            slug="",
+        )
+        market_b = Market(
+            id=202,
+            platform="predict_fun",
+            platform_market_id="pf-202",
+            status="active",
+            tradable=True,
+            title="market b",
+            normalized_title="market b",
+            description="",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="",
+            slug="",
+        )
+
+        with patch.object(
+            manager,
+            "_get_delivery_targets",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "user_id": 11,
+                        "subscription_id": 21,
+                        "telegram_chat_id": "1001",
+                        "preferences": {"muted": True},
+                    }
+                ]
+            ),
+        ):
+            created_count = await manager._fanout_opportunity(opportunity, pair, market_a, market_b)
+
+        self.assertEqual(created_count, 0)
+        self.assertEqual(snapshot_counters()["fanout.drop.muted"], 1)
+
+
+    async def test_fanout_counts_shared_drop_reason_once_per_opportunity(self):
+        db = FakeDbSession()
+        manager = FanoutManager(db)
+        opportunity = SimpleNamespace(
+            id=7,
+            net_roi=0.01,
+            capital_required=10.0,
+            net_profit=5.0,
+        )
+        pair = SimpleNamespace(id=5)
+        market_a = Market(
+            id=101,
+            platform="polymarket",
+            platform_market_id="poly-101",
+            status="active",
+            tradable=True,
+            title="market a",
+            normalized_title="market a",
+            description="",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="",
+            slug="",
+        )
+        market_b = Market(
+            id=202,
+            platform="predict_fun",
+            platform_market_id="pf-202",
+            status="active",
+            tradable=True,
+            title="market b",
+            normalized_title="market b",
+            description="",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="",
+            slug="",
+        )
+
+        with patch.object(
+            manager,
+            "_get_delivery_targets",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "user_id": 11,
+                        "subscription_id": 21,
+                        "telegram_chat_id": "1001",
+                        "preferences": {"min_roi_percent": 5.0},
+                    },
+                    {
+                        "user_id": 12,
+                        "subscription_id": 22,
+                        "telegram_chat_id": "1002",
+                        "preferences": {"min_roi_percent": 5.0},
+                    },
+                ]
+            ),
+        ):
+            created_count = await manager._fanout_opportunity(opportunity, pair, market_a, market_b)
+
+        self.assertEqual(created_count, 0)
+        self.assertEqual(snapshot_counters()["fanout.drop.min_roi"], 1)
 
 
     async def test_fanout_skips_duplicate_alert_insert_without_failing_batch(self):

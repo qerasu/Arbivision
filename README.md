@@ -107,6 +107,10 @@ Arbivision — арбитражный бот, который мониторит 
 `FEE_PREDICT_FUN_BPS` | Комиссия Predict.Fun в BPS | 200.0 (2%)
 `MARKET_REFRESH_SECONDS` | Интервал синхронизации рынков | 60 сек
 `EMPTY_ORDERBOOK_THRESHOLD` | Лимит пустых стаканов до полного игнорирования пары | 3
+`ORDERBOOK_CACHE_TTL_SECONDS` | TTL in-memory кеша ордербуков | 2 сек
+`ORDERBOOK_CACHE_MAX_ITEMS` | Максимальный размер кеша ордербуков | 2048
+`ORDERBOOK_POLYMARKET_BATCH_SIZE` | Размер batch-запроса CLOB-книг Polymarket | 200
+`ORDERBOOK_PREDICT_FUN_CONCURRENCY` | Конкурентность запросов Predict.Fun orderbook | 4
 `ALERTS_DEDUPE_TTL_SECONDS` | TTL дедупликации алертов в Redis | 600 сек
 `ALERTS_DELTA_PROFIT_THRESHOLD_USD` | Минимальный прирост профита для повторного алерта | $3
 `ALERTS_DELTA_ROI_THRESHOLD_PERCENT` | Минимальный прирост ROI для повторного алерта | 0.5%
@@ -283,12 +287,20 @@ category, slug
 
 **`fetch_orderbooks_for_pairs(pairs, db_session)`:**
 1. Загружает маппинг `market_id → (platform, platform_market_id)` из БД
-2. Параллельно (semaphore = 4) загружает ордербуки для каждой пары
+2. Параллельно загружает Predict.Fun orderbook'и с ограничением по `ORDERBOOK_PREDICT_FUN_CONCURRENCY`
+3. Batch'ами получает нужные Polymarket CLOB-книги
+4. Переиспользует короткий in-memory TTL-кеш, чтобы не бить API повторно в соседних циклах
 
-**`_fetch_pair_orderbooks(pair, ...)`:**
-1. Определяет platform_market_id для Polymarket и Predict.Fun
-2. Загружает ордербук Predict.Fun
-3. Строит directional books
+**`diagnose_pair(pair, ...)`:**
+Отдельный диагностический путь для admin API. Позволяет понять, почему конкретная пара отвалилась на этапе orderbook:
+- `missing_platform_market_id`
+- `predict_fun_market_not_found`
+- `predict_fun_fetch_failed`
+- `missing_outcome_mapping`
+- `predict_fun_yes_asks_missing`
+- `predict_fun_no_asks_missing`
+- `polymarket_yes_asks_missing`
+- `polymarket_no_asks_missing`
 
 **`_build_direction_books(pair, pf_orderbook)` — ключевая логика:**
 
@@ -366,7 +378,9 @@ pf_asks   = [(0.45, 400), (0.47, 200), ...]   # sorted by price ASC
 
 1. **Глобальная фильтрация по preferences:**
    - min_roi — если ROI ниже порога пользователя
+   - min_capital — если объём сделки ниже минимального порога
    - max_capital — если объём сделки превышает порог
+   - min_profit — если ожидаемый профит ниже порога
    - max_days_to_close — если рынок закрывается слишком нескоро (или дата неизвестна)
 
 2. **Smart deduplication (Redis):**
@@ -376,7 +390,8 @@ pf_asks   = [(0.45, 400), (0.47, 200), ...]   # sorted by price ASC
 
 3. **Сохранение в БД:**
    - Создаётся `ArbOpportunity` (расчёт сохраняется)
-   - Создаются `Alert` для каждого chat_id из `TELEGRAM_DEFAULT_CHAT_IDS` со статусом `"queued"`
+   - Fanout идет через `Subscription` + `UserPreference`, а `TELEGRAM_DEFAULT_CHAT_IDS` используется только как legacy fallback
+   - Для подходящих Telegram-target'ов создаются `Alert` со статусом `"queued"`
    - Обновляется dedupe-кэш в Redis
 
 4. **Rollback-safety:** если commit в БД упал, dedupe-ключ из Redis удаляется (иначе можно потерять алерт навсегда)
@@ -442,15 +457,19 @@ Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
 ### handlers.py — команды и навигация
 
 **Команды бота:**
-- `/start` — главное меню с кнопками Status и Settings
-- `/status` — текущий статус бота (Active/Inactive)
+- `/start` — главное меню с кнопками Pause/Resume и Settings
 - `/settings` — просмотр и изменение фильтров
-- `/set roi 1.5` — быстрая установка ROI (также: `volume`, `expires`)
+- `/set roi 1.5` — минимальный ROI
+- `/set minvolume 50` — минимальный объем сделки в USD
+- `/set volume 500` — максимальный объем сделки в USD
+- `/set profit 10` — минимальный профит в USD
+- `/set expires 30` — максимум дней до закрытия рынка
+- для `minvolume`, `volume`, `profit`, `expires` поддерживается `off`
 
 **Inline-навигация (callback queries):**
 - `tg_nav:home` → главное меню
-- `tg_nav:status` → статус
 - `tg_nav:settings` → настройки
+- `tg_nav:toggle_mute` → пауза/возобновление алертов
 - `tg_nav:reset` → сброс всех фильтров
 - `tg_edit:min_roi_percent` → промпт для ввода значения
 
@@ -463,20 +482,25 @@ Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
 
 ### preferences.py — фильтры и настройки
 
-**Настройки хранятся в БД** (`settings` таблица, ключ `tg_alert_prefs:global`):
+**Основные настройки пользователя хранятся в `user_preferences`, а UI state и legacy global fallback — в `settings`:**
 ```python
 {
-    "min_roi_percent": None,    # None = не фильтровать
-    "max_capital_usd": None,    # None = не фильтровать
-    "max_days_to_close": 30,    # 30 дней — дефолт
+    "min_roi_percent": 1,
+    "min_capital_usd": 10,
+    "max_capital_usd": 150,
+    "min_profit_usd": None,
+    "max_days_to_close": 5,
+    "muted": False,
 }
 ```
 
 **`filter_reason_for_preferences(opportunity, market_a, market_b, preferences)`:**
-Проверяет три фильтра последовательно:
+Проверяет фильтры последовательно:
 1. `min_roi` — ROI opportunity < порога
-2. `max_capital` — capital_required > порога
-3. `max_days_to_close` — дата закрытия рынка > порога. Если дата неизвестна — фильтруется.
+2. `min_capital` — capital_required < минимального порога
+3. `max_capital` — capital_required > порога
+4. `min_profit` — net_profit < порога
+5. `max_days_to_close` — дата закрытия рынка > порога. Если дата неизвестна — фильтруется.
 
 **Извлечение даты закрытия (`extract_pair_close_datetime`):**
 Берётся максимальная дата из обоих рынков. Парсер проверяет ~20 полей (`endDate`, `resolveDate`, `closedTime`...) и поддерживает ISO-строки, Unix timestamps (секунды и миллисекунды).
@@ -529,8 +553,10 @@ Endpoint | Auth | Описание
 ---------|------|----------
 `GET /api/health` | Нет | `{"status": "ok"}`
 `GET /api/status` | Нет | Количества рынков, пар, opportunities, очередь алертов
+`GET /api/admin/runtime-metrics` | `X-Admin-Token` | Снимок runtime counters, поддерживает `?reset=true`
 `GET /api/admin/pairs?status=auto_approved` | `X-Admin-Token` | Список пар с фильтрацией по статусу
 `POST /api/admin/pairs/{id}/approve` | `X-Admin-Token` | Ручное подтверждение пары
+`GET /api/admin/pairs/{id}/diagnose` | `X-Admin-Token` | Диагностика, на каком этапе пара отвалилась: orderbook, calculator или fanout/preferences
 `GET /api/admin/matcher/debug?market_id=42` | `X-Admin-Token` | Отладка matcher: top-N кандидатов с score и reject_reason
 
 Admin-endpoint'ы требуют заголовок `X-Admin-Token` со значением из `ADMIN_API_TOKEN`.
@@ -580,7 +606,32 @@ sent_at, error_message, created_at
 ```
 id, key (unique), value_json, updated_at
 ```
-Хранит Telegram-настройки и UI state.
+Хранит UI state и legacy/global Telegram fallback-настройки.
+
+### User
+```
+id, status, created_at
+```
+
+### TelegramChat
+```
+id, user_id (FK → users), chat_id, chat_type,
+is_primary, is_verified, created_at
+```
+
+### UserPreference
+```
+id, user_id (FK → users),
+min_roi_percent, min_capital_usd, max_capital_usd,
+min_profit_usd, max_days_to_close, muted,
+updated_at, created_at
+```
+
+### Subscription
+```
+id, user_id (FK → users), channel, destination,
+status, updated_at, created_at
+```
 
 ### BlacklistRule
 ```
@@ -615,6 +666,10 @@ ADMIN_API_TOKEN=your_admin_token
 MARKET_REFRESH_SECONDS=60
 FEE_POLYMARKET_BPS=100.0
 FEE_PREDICT_FUN_BPS=200.0
+ORDERBOOK_CACHE_TTL_SECONDS=2
+ORDERBOOK_CACHE_MAX_ITEMS=2048
+ORDERBOOK_POLYMARKET_BATCH_SIZE=200
+ORDERBOOK_PREDICT_FUN_CONCURRENCY=4
 ALERTS_DEDUPE_TTL_SECONDS=600
 ```
 
@@ -630,7 +685,7 @@ ALERTS_DEDUPE_TTL_SECONDS=600
 python3 run_tests.py
 ```
 
-По умолчанию запускает все 86 юнит-тестов. Live-тесты пропускаются.
+Сейчас полный локальный прогон дает 130 тестов. Live-тесты по умолчанию пропускаются.
 
 Опции:
 - `-v` / `--verbose` — подробный вывод с именами тестов
@@ -659,6 +714,7 @@ python3 tests/test_admin_api.py                    # краткий вывод
 python3 tests/test_admin_api.py --verbose          # полный JSON-ответ каждого эндпоинта
 python3 tests/test_admin_api.py --market-id 42     # отладка матчера для конкретного рынка
 python3 tests/test_admin_api.py --status approved  # показать только вручную одобренные пары
+python3 tests/test_admin_api.py --pair-id 42       # диагностика конкретной пары
 ```
 
 ### Состав тестов

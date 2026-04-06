@@ -88,9 +88,11 @@ class FanoutManager:
 
     async def _fanout_opportunity(self, opportunity, pair, market_a, market_b, delivery_targets=None):
         targets = delivery_targets if delivery_targets is not None else await self._get_delivery_targets()
-        eligible_targets = self._filter_targets(opportunity, targets, market_a, market_b)
+        eligible_targets, drop_reasons = self._filter_targets(opportunity, targets, market_a, market_b)
         if not eligible_targets:
             incr_counter("fanout.opportunity_filtered_all_targets")
+            for drop_reason in sorted(drop_reasons):
+                incr_counter(f"fanout.drop.{drop_reason}")
             return 0
 
         existing_stmt = select(Alert.telegram_chat_id).where(Alert.opportunity_id == opportunity.id)
@@ -161,20 +163,24 @@ class FanoutManager:
 
     def _filter_targets(self, opportunity, targets, market_a, market_b):
         eligible_targets = []
+        drop_reasons = set()
 
         for target in targets:
             if not target.get("telegram_chat_id"):
                 continue
             preferences = target.get("preferences") or {}
             if preferences.get("muted"):
+                drop_reasons.add("muted")
                 continue
-            if filter_reason_for_preferences(
+            filter_reason = filter_reason_for_preferences(
                 opportunity,
                 market_a,
                 market_b,
-                target.get("preferences") or {},
-            ):
+                preferences,
+            )
+            if filter_reason:
+                drop_reasons.add(filter_reason)
                 continue
             eligible_targets.append(target)
 
-        return eligible_targets
+        return eligible_targets, drop_reasons

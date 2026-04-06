@@ -4,9 +4,11 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from arbitrage_bot.core.observability import reset_counters
+from arbitrage_bot.core.observability import snapshot_counters
 from arbitrage_bot.services.matcher import MatcherService
 from arbitrage_bot import worker as worker_module
-from arbitrage_bot.worker import _build_cached_market_signatures, _build_candidate_index_from_signatures, _candidate_markets_for_poly, _filter_skippable_pairs, _mark_stale_pairs, _prune_market_signature_cache, _reconcile_market_pairs, _update_empty_counts
+from arbitrage_bot.worker import _build_cached_market_signatures, _build_candidate_index_from_signatures, _candidate_markets_for_poly, _filter_skippable_pairs, _mark_stale_pairs, _process_candidates, _prune_market_signature_cache, _reconcile_market_pairs, _update_empty_counts
 
 
 class WorkerPairLifecycleTests(unittest.TestCase):
@@ -238,6 +240,10 @@ class FakeRedis:
 
 
 class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        reset_counters()
+
+
     async def test_filter_skippable_pairs_reads_threshold_from_redis(self):
         fake_redis = FakeRedis()
         fake_redis.data["worker:pair-empty-count:pair-1"] = "3"
@@ -270,3 +276,51 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fake_redis.data["worker:pair-empty-count:pair-1"], "1")
         self.assertNotIn("worker:pair-empty-count:pair-2", fake_redis.data)
+
+
+    async def test_process_candidates_counts_calculator_drop_reason(self):
+        class FakeScalarResult:
+            def __init__(self, items):
+                self.items = items
+
+
+            def scalars(self):
+                return self
+
+
+            def all(self):
+                return list(self.items)
+
+
+        class FakeDb:
+            async def execute(self, stmt):
+                return FakeScalarResult([SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20)])
+
+
+        fake_db = FakeDb()
+        orderbook_service = SimpleNamespace(
+            fetch_orderbooks_for_pairs=AsyncMock(
+                return_value=[
+                    {
+                        "pair": SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+                        "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.7, 2)]}},
+                    }
+                ]
+            )
+        )
+        calculator = SimpleNamespace(calculate_opportunities=Mock(return_value=[]))
+        alert_manager = SimpleNamespace()
+
+        with patch("arbitrage_bot.worker._filter_skippable_pairs", new=AsyncMock(return_value=[
+            SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+        ])), patch(
+            "arbitrage_bot.worker._load_market_map_for_pairs",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "arbitrage_bot.worker._update_empty_counts",
+            new=AsyncMock(),
+        ):
+            result = await _process_candidates(fake_db, orderbook_service, calculator, alert_manager)
+
+        self.assertEqual(result["opportunities"], 0)
+        self.assertEqual(snapshot_counters()["calculator.drop.no_profitable_directions"], 1)

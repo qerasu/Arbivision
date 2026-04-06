@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from arbitrage_bot.core.observability import reset_counters
+from arbitrage_bot.core.observability import snapshot_counters
 from arbitrage_bot.services import orderbook as orderbook_module
 from arbitrage_bot.services.orderbook import OrderbookService
 
@@ -29,6 +31,7 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         orderbook_module._predict_fun_orderbook_cache.clear()
         orderbook_module._polymarket_book_cache.clear()
+        reset_counters()
 
 
     async def test_fetches_orderbooks_when_pair_market_sides_are_reversed(self):
@@ -88,7 +91,7 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
             "poly-no": {"asset_id": "poly-no", "asks": [{"price": "0.6", "size": "3"}]},
         }
 
-        directions = service._build_direction_books(pair, pf_payload, polymarket_books)
+        directions, drop_reason = service._build_direction_books(pair, pf_payload, polymarket_books)
 
         self.assertEqual(
             directions,
@@ -103,6 +106,43 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
+        self.assertIsNone(drop_reason)
+
+
+    async def test_records_specific_drop_reason_for_missing_polymarket_no_asks(self):
+        service = OrderbookService()
+        service.predict_fun.fetch_orderbook = AsyncMock(
+            return_value={"data": {"asks": [[0.2, 5]], "bids": [[0.7, 6]]}}
+        )
+        service.polymarket.fetch_books = AsyncMock(
+            return_value=[
+                {"asset_id": "poly-yes", "asks": [{"price": "0.4", "size": "2"}]},
+                {"asset_id": "poly-no", "asks": []},
+            ]
+        )
+
+        pair = SimpleNamespace(
+            id=9,
+            market_id_a=200,
+            market_id_b=100,
+            outcome_mapping_json={
+                "market_a": {"yes": "poly-yes", "no": "poly-no"},
+                "market_b": {"yes": "pf-yes", "no": "pf-no"},
+            },
+        )
+        db = FakeDbSession(
+            [
+                (100, "polymarket", "poly-100"),
+                (200, "predict_fun", "pf-200"),
+            ]
+        )
+
+        result = await service.fetch_orderbooks_for_pairs([pair], db)
+        counters = snapshot_counters()
+
+        self.assertEqual(result, [])
+        self.assertEqual(counters["orderbook.directional_books_unavailable"], 1)
+        self.assertEqual(counters["orderbook.drop.polymarket_no_asks_missing"], 1)
 
 
     async def test_missing_predict_fun_orderbook_is_treated_as_absent_market(self):
@@ -136,6 +176,37 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, [])
         debug_mock.assert_called_once()
+        counters = snapshot_counters()
+        self.assertEqual(counters["orderbook.fetch.predict_fun_market_not_found"], 1)
+        self.assertEqual(counters["orderbook.drop.predict_fun_market_not_found"], 1)
+
+
+    async def test_predict_fun_fetch_failure_counts_pair_drop_reason(self):
+        service = OrderbookService()
+        service.predict_fun.fetch_orderbook = AsyncMock(side_effect=RuntimeError("timeout"))
+
+        pair = SimpleNamespace(
+            id=9,
+            market_id_a=200,
+            market_id_b=100,
+            outcome_mapping_json={
+                "market_a": {"yes": "poly-yes", "no": "poly-no"},
+                "market_b": {"yes": "pf-yes", "no": "pf-no"},
+            },
+        )
+        db = FakeDbSession(
+            [
+                (100, "polymarket", "poly-100"),
+                (200, "predict_fun", "9212"),
+            ]
+        )
+
+        result = await service.fetch_orderbooks_for_pairs([pair], db)
+        counters = snapshot_counters()
+
+        self.assertEqual(result, [])
+        self.assertEqual(counters["orderbook.fetch.predict_fun_fetch_failed"], 1)
+        self.assertEqual(counters["orderbook.drop.predict_fun_fetch_failed"], 1)
 
 
     async def test_batches_polymarket_books_across_pairs(self):

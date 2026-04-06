@@ -33,22 +33,11 @@ class OrderbookService:
 
 
     async def fetch_orderbooks_for_pairs(self, market_pairs, db_session):
-        market_id_map = {}
         market_ids = []
         for pair in market_pairs:
             market_ids.append(pair.market_id_a)
             market_ids.append(pair.market_id_b)
-
-        if market_ids:
-            stmt = select(Market.id, Market.platform, Market.platform_market_id).where(
-                Market.id.in_(market_ids)
-            )
-            result = await db_session.execute(stmt)
-            for market_id, platform, platform_market_id in result.all():
-                market_id_map[market_id] = {
-                    "platform": platform,
-                    "platform_market_id": platform_market_id,
-                }
+        market_id_map = await self._load_market_id_map(market_ids, db_session)
 
         prepared_pairs = []
         for pair in market_pairs:
@@ -61,6 +50,7 @@ class OrderbookService:
                     pf_id=pf_platform_id or "missing",
                 )
                 incr_counter("orderbook.missing_platform_market_id")
+                incr_counter("orderbook.drop.missing_platform_market_id")
                 continue
 
             prepared_pairs.append(
@@ -74,12 +64,17 @@ class OrderbookService:
         if not prepared_pairs:
             return []
 
-        pf_orderbooks = await self._fetch_predict_fun_orderbooks(prepared_pairs)
-        prepared_pairs = [
-            item
-            for item in prepared_pairs
-            if pf_orderbooks.get(item["pf_market_id"]) is not None
-        ]
+        pf_orderbooks, pf_drop_reasons = await self._fetch_predict_fun_orderbooks(prepared_pairs)
+        retained_pairs = []
+        for item in prepared_pairs:
+            pf_market_id = item["pf_market_id"]
+            if pf_orderbooks.get(pf_market_id) is not None:
+                retained_pairs.append(item)
+                continue
+            drop_reason = pf_drop_reasons.get(pf_market_id)
+            if drop_reason:
+                incr_counter(f"orderbook.drop.{drop_reason}")
+        prepared_pairs = retained_pairs
         if not prepared_pairs:
             return []
 
@@ -93,7 +88,7 @@ class OrderbookService:
             if pf_ob is None:
                 continue
 
-            directions = self._build_direction_books(
+            directions, drop_reason = self._build_direction_books(
                 pair,
                 pf_ob,
                 polymarket_books,
@@ -104,6 +99,8 @@ class OrderbookService:
                     pair_id=pair.id,
                 )
                 incr_counter("orderbook.directional_books_unavailable")
+                if drop_reason:
+                    incr_counter(f"orderbook.drop.{drop_reason}")
                 continue
 
             results.append(
@@ -120,6 +117,136 @@ class OrderbookService:
         return results
 
 
+    async def diagnose_pair(self, pair, db_session):
+        market_id_map = await self._load_market_id_map(
+            [pair.market_id_a, pair.market_id_b],
+            db_session,
+        )
+
+        poly_platform_id, pf_platform_id = self._resolve_platform_market_ids(pair, market_id_map)
+        if not poly_platform_id or not pf_platform_id:
+            return {
+                "stage": "orderbook",
+                "reason": "missing_platform_market_id",
+                "poly_market_id": poly_platform_id,
+                "pf_market_id": pf_platform_id,
+            }
+
+        pf_orderbook_payload, drop_reason = await self._fetch_predict_fun_orderbook_with_reason(
+            pf_platform_id,
+        )
+        if drop_reason:
+            return {
+                "stage": "orderbook",
+                "reason": drop_reason,
+                "pf_market_id": pf_platform_id,
+            }
+
+        poly_yes_id, poly_no_id = self._polymarket_token_ids_for_pair(pair)
+        if not poly_yes_id or not poly_no_id:
+            return {
+                "stage": "orderbook",
+                "reason": "missing_outcome_mapping",
+            }
+
+        polymarket_books = await self._fetch_polymarket_books(
+            [
+                {
+                    "pair": pair,
+                    "poly_market_id": poly_platform_id,
+                    "pf_market_id": pf_platform_id,
+                }
+            ]
+        )
+        directions, direction_drop_reason = self._build_direction_books(
+            pair,
+            pf_orderbook_payload,
+            polymarket_books,
+        )
+        if not directions:
+            payload = {
+                "stage": "orderbook",
+                "reason": direction_drop_reason,
+            }
+            if direction_drop_reason == "polymarket_yes_asks_missing":
+                payload["token_id"] = str(poly_yes_id)
+            elif direction_drop_reason == "polymarket_no_asks_missing":
+                payload["token_id"] = str(poly_no_id)
+            return payload
+
+        return {
+            "stage": "ready",
+            "reason": None,
+            "directions": directions,
+        }
+
+
+    async def _load_market_id_map(self, market_ids, db_session):
+        if not market_ids:
+            return {}
+
+        stmt = select(Market.id, Market.platform, Market.platform_market_id).where(
+            Market.id.in_(market_ids)
+        )
+        result = await db_session.execute(stmt)
+        return {
+            market_id: {
+                "platform": platform,
+                "platform_market_id": platform_market_id,
+            }
+            for market_id, platform, platform_market_id in result.all()
+        }
+
+
+    def _polymarket_token_ids_for_pair(self, pair):
+        mapping = getattr(pair, "outcome_mapping_json", None) or {}
+        market_a = mapping.get("market_a") or {}
+        return market_a.get("yes"), market_a.get("no")
+
+
+    async def _fetch_predict_fun_orderbook_with_reason(self, market_id, semaphore=None):
+        cached_value = self._get_cache_value(_predict_fun_orderbook_cache, market_id)
+        if cached_value is _CACHE_MISS:
+            return None, "predict_fun_market_not_found"
+        if cached_value is not None:
+            return cached_value, None
+
+        if semaphore is None:
+            return await self._fetch_predict_fun_orderbook_uncached(market_id)
+
+        async with semaphore:
+            cached_value = self._get_cache_value(_predict_fun_orderbook_cache, market_id)
+            if cached_value is _CACHE_MISS:
+                return None, "predict_fun_market_not_found"
+            if cached_value is not None:
+                return cached_value, None
+            return await self._fetch_predict_fun_orderbook_uncached(market_id)
+
+
+    async def _fetch_predict_fun_orderbook_uncached(self, market_id):
+        try:
+            payload = await self.predict_fun.fetch_orderbook(market_id)
+        except Exception as exc:
+            if self._is_missing_predict_fun_market(exc):
+                log.debug(
+                    "predict.fun market orderbook not found",
+                    source="predict.fun",
+                    market_id=market_id,
+                )
+                incr_counter("orderbook.fetch.predict_fun_market_not_found")
+                self._set_cache_value(_predict_fun_orderbook_cache, market_id, _CACHE_MISS)
+                return None, "predict_fun_market_not_found"
+            log.warning(
+                "orderbook fetch failed",
+                source="predict.fun",
+                market_id=market_id,
+                error=format_compact_error(exc),
+            )
+            incr_counter("orderbook.fetch.predict_fun_fetch_failed")
+            return None, "predict_fun_fetch_failed"
+
+        self._set_cache_value(_predict_fun_orderbook_cache, market_id, payload)
+        return payload, None
     async def _fetch_predict_fun_orderbooks(self, prepared_pairs):
         unique_market_ids = {
             item["pf_market_id"]
@@ -127,7 +254,7 @@ class OrderbookService:
             if item.get("pf_market_id")
         }
         if not unique_market_ids:
-            return {}
+            return {}, {}
 
         semaphore = asyncio.Semaphore(self._pair_fetch_concurrency)
         tasks = [
@@ -136,51 +263,23 @@ class OrderbookService:
         ]
         results = await asyncio.gather(*tasks)
         orderbooks = {}
+        drop_reasons = {}
 
-        for market_id, payload in results:
+        for market_id, payload, drop_reason in results:
             if payload is not None:
                 orderbooks[market_id] = payload
+            elif drop_reason:
+                drop_reasons[market_id] = drop_reason
 
-        return orderbooks
+        return orderbooks, drop_reasons
 
 
     async def _fetch_single_predict_fun_orderbook(self, market_id, semaphore):
-        cached_value = self._get_cache_value(_predict_fun_orderbook_cache, market_id)
-        if cached_value is _CACHE_MISS:
-            return market_id, None
-        if cached_value is not None:
-            return market_id, cached_value
-
-        async with semaphore:
-            cached_value = self._get_cache_value(_predict_fun_orderbook_cache, market_id)
-            if cached_value is _CACHE_MISS:
-                return market_id, None
-            if cached_value is not None:
-                return market_id, cached_value
-
-            try:
-                payload = await self.predict_fun.fetch_orderbook(market_id)
-            except Exception as exc:
-                if self._is_missing_predict_fun_market(exc):
-                    log.debug(
-                        "predict.fun market orderbook not found",
-                        source="predict.fun",
-                        market_id=market_id,
-                    )
-                    incr_counter("orderbook.predict_fun_not_found")
-                    self._set_cache_value(_predict_fun_orderbook_cache, market_id, _CACHE_MISS)
-                else:
-                    log.warning(
-                        "orderbook fetch failed",
-                        source="predict.fun",
-                        market_id=market_id,
-                        error=format_compact_error(exc),
-                    )
-                    incr_counter("orderbook.predict_fun_fetch_failed")
-                return market_id, None
-
-            self._set_cache_value(_predict_fun_orderbook_cache, market_id, payload)
-            return market_id, payload
+        payload, drop_reason = await self._fetch_predict_fun_orderbook_with_reason(
+            market_id,
+            semaphore=semaphore,
+        )
+        return market_id, payload, drop_reason
 
 
     async def _fetch_polymarket_books(self, prepared_pairs):
@@ -262,14 +361,20 @@ class OrderbookService:
         poly_no_id = market_a.get("no")
         pf_yes_asks, pf_no_asks = self._extract_predict_fun_directional_asks(pf_orderbook_payload)
 
-        if not poly_yes_id or not poly_no_id or not pf_yes_asks or not pf_no_asks:
-            return None
+        if not poly_yes_id or not poly_no_id:
+            return None, "missing_outcome_mapping"
+        if not pf_yes_asks:
+            return None, "predict_fun_yes_asks_missing"
+        if not pf_no_asks:
+            return None, "predict_fun_no_asks_missing"
 
         poly_yes_asks = self._extract_asks(polymarket_books.get(str(poly_yes_id)))
         poly_no_asks = self._extract_asks(polymarket_books.get(str(poly_no_id)))
-        
-        if not poly_yes_asks or not poly_no_asks:
-            return None
+
+        if not poly_yes_asks:
+            return None, "polymarket_yes_asks_missing"
+        if not poly_no_asks:
+            return None, "polymarket_no_asks_missing"
 
         return {
             "A_yes_B_no": {
@@ -280,7 +385,7 @@ class OrderbookService:
                 "poly": poly_no_asks,
                 "pf": pf_yes_asks,
             },
-        }
+        }, None
 
 
     def _extract_predict_fun_directional_asks(self, orderbook_payload):

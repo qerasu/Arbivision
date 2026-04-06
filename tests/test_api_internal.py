@@ -2,7 +2,7 @@ from unittest.mock import patch
 import unittest
 from types import SimpleNamespace
 
-from arbitrage_bot.api.internal import debug_matcher, get_pairs, get_runtime_metrics, status_check
+from arbitrage_bot.api.internal import debug_matcher, diagnose_pair, get_pairs, get_runtime_metrics, status_check
 
 
 class FakeScalars:
@@ -177,3 +177,98 @@ class InternalApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["data"][0]["market_id"], 201)
         self.assertTrue(payload["data"][0]["matched"])
         self.assertIsNone(payload["data"][0]["reject_reason"])
+
+
+    async def test_diagnose_pair_returns_not_found_for_unknown_pair(self):
+        db = FakeDb([[]])
+
+        payload = await diagnose_pair(pair_id=999, db=db)
+
+        self.assertEqual(payload, {"status": "not_found", "pair_id": 999})
+
+
+    async def test_diagnose_pair_reports_orderbook_reason(self):
+        pair = SimpleNamespace(id=7, market_id_a=100, market_id_b=200)
+        market_a = SimpleNamespace(id=100, raw_payload_json={})
+        market_b = SimpleNamespace(id=200, raw_payload_json={})
+        db = FakeDb([pair, [market_a, market_b]])
+
+        fake_service = SimpleNamespace(
+            diagnose_pair=patch,
+            close=patch,
+        )
+        fake_service.diagnose_pair = unittest.mock.AsyncMock(
+            return_value={
+                "stage": "orderbook",
+                "reason": "predict_fun_yes_asks_missing",
+            }
+        )
+        fake_service.close = unittest.mock.AsyncMock()
+
+        with patch("arbitrage_bot.api.internal.OrderbookService", return_value=fake_service):
+            payload = await diagnose_pair(pair_id=7, db=db)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["diagnosis"]["stage"], "orderbook")
+        self.assertEqual(payload["diagnosis"]["reason"], "predict_fun_yes_asks_missing")
+
+
+    async def test_diagnose_pair_reports_filter_reasons(self):
+        pair = SimpleNamespace(id=7, market_id_a=100, market_id_b=200)
+        market_a = SimpleNamespace(id=100, raw_payload_json={})
+        market_b = SimpleNamespace(id=200, raw_payload_json={})
+        db = FakeDb([pair, [market_a, market_b]])
+
+        fake_service = SimpleNamespace()
+        fake_service.diagnose_pair = unittest.mock.AsyncMock(
+            return_value={
+                "stage": "ready",
+                "reason": None,
+                "directions": {
+                    "A_yes_B_no": {
+                        "poly": [(0.4, 10)],
+                        "pf": [(0.5, 10)],
+                    }
+                },
+            }
+        )
+        fake_service.close = unittest.mock.AsyncMock()
+
+        fake_calculator = SimpleNamespace(
+            calculate_opportunities=lambda directions: [
+                {
+                    "direction": "A_yes_B_no",
+                    "capital_required": 100.0,
+                    "net_profit": 4.0,
+                    "net_roi": 0.04,
+                }
+            ]
+        )
+
+        with patch("arbitrage_bot.api.internal.OrderbookService", return_value=fake_service), patch(
+            "arbitrage_bot.api.internal.ArbitrageCalculator",
+            return_value=fake_calculator,
+        ), patch(
+            "arbitrage_bot.api.internal._load_diagnostic_targets",
+            new=unittest.mock.AsyncMock(
+                return_value=[
+                    {
+                        "telegram_chat_id": "123",
+                        "user_id": 1,
+                        "preferences": {
+                            "min_roi_percent": 5.0,
+                            "min_capital_usd": None,
+                            "max_capital_usd": None,
+                            "min_profit_usd": None,
+                            "max_days_to_close": None,
+                        },
+                    }
+                ]
+            ),
+        ):
+            payload = await diagnose_pair(pair_id=7, db=db)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["diagnosis"]["stage"], "fanout")
+        self.assertEqual(payload["diagnosis"]["reason"], "filtered_by_preferences")
+        self.assertEqual(payload["diagnosis"]["targets"][0]["results"][0]["reason"], "min_roi")
