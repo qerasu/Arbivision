@@ -12,7 +12,6 @@ from arbitrage_bot.core.observability import reset_counters
 from arbitrage_bot.core.observability import snapshot_counters
 from arbitrage_bot.models.orm import Alert
 from arbitrage_bot.models.orm import Market
-from arbitrage_bot.services import fanout_manager as fanout_manager_module
 from arbitrage_bot.services.fanout_manager import FanoutManager
 
 
@@ -87,8 +86,8 @@ class FakeDbSession:
 
 class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        fanout_manager_module._delivery_targets_cache["value"] = None
-        fanout_manager_module._delivery_targets_cache["expires_at"] = 0.0
+        FanoutManager._cache_value = None
+        FanoutManager._cache_expires_at = 0.0
         reset_counters()
 
 
@@ -158,7 +157,7 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         ):
-            created_count = await manager._fanout_opportunity(opportunity, pair, market_a, market_b)
+            created_count = await manager._fanout_opportunity(opportunity, market_a, market_b)
 
         self.assertEqual(created_count, 1)
         self.assertEqual(db.flush_calls, 1)
@@ -221,7 +220,7 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         ):
-            created_count = await manager._fanout_opportunity(opportunity, pair, market_a, market_b)
+            created_count = await manager._fanout_opportunity(opportunity, market_a, market_b)
 
         self.assertEqual(created_count, 0)
         self.assertEqual(snapshot_counters()["fanout.drop.muted"], 1)
@@ -286,7 +285,7 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         ):
-            created_count = await manager._fanout_opportunity(opportunity, pair, market_a, market_b)
+            created_count = await manager._fanout_opportunity(opportunity, market_a, market_b)
 
         self.assertEqual(created_count, 0)
         self.assertEqual(snapshot_counters()["fanout.drop.min_roi"], 1)
@@ -351,7 +350,7 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         ):
-            created_count = await manager._fanout_opportunity(opportunity, pair, market_a, market_b)
+            created_count = await manager._fanout_opportunity(opportunity, market_a, market_b)
 
         self.assertEqual(created_count, 1)
 

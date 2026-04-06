@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from aiogram.exceptions import TelegramBadRequest
 from arbitrage_bot.models.orm import UserPreference
+from arbitrage_bot.services.calculator import ArbitrageCalculator
 from arbitrage_bot.tg_bot.bot import _apply_calc_result_to_opportunity
 from arbitrage_bot.tg_bot.bot import _build_bot_commands
 from arbitrage_bot.tg_bot.bot import _format_alert_message
@@ -20,53 +21,11 @@ from arbitrage_bot.tg_bot.handlers import _apply_setting_update
 from arbitrage_bot.tg_bot.handlers import _safe_answer_callback
 from arbitrage_bot.tg_bot.handlers import _safe_delete_message
 from arbitrage_bot.tg_bot.handlers import _safe_edit_text
-
-from arbitrage_bot.tg_bot.handlers import _parse_set_command
 from arbitrage_bot.tg_bot.preferences import format_status_text
 from sqlalchemy.exc import ProgrammingError
 
 
 class TelegramBotCommandsTests(unittest.TestCase):
-    def test_parse_set_command_for_roi(self):
-        field_name, value = _parse_set_command("/set roi 1.5")
-
-        self.assertEqual(field_name, "min_roi_percent")
-        self.assertEqual(value, 1.5)
-
-
-    def test_parse_set_command_for_volume(self):
-        field_name, value = _parse_set_command("/set volume 500")
-
-        self.assertEqual(field_name, "max_capital_usd")
-        self.assertEqual(value, 500.0)
-
-
-    def test_parse_set_command_for_min_volume(self):
-        field_name, value = _parse_set_command("/set minvolume 50")
-
-        self.assertEqual(field_name, "min_capital_usd")
-        self.assertEqual(value, 50.0)
-
-
-    def test_parse_set_command_for_profit(self):
-        field_name, value = _parse_set_command("/set profit 10")
-
-        self.assertEqual(field_name, "min_profit_usd")
-        self.assertEqual(value, 10.0)
-
-
-    def test_parse_set_command_for_expires_off(self):
-        field_name, value = _parse_set_command("/set expires off")
-
-        self.assertEqual(field_name, "max_days_to_close")
-        self.assertIsNone(value)
-
-
-    def test_parse_set_command_error_mentions_reset(self):
-        with self.assertRaisesRegex(ValueError, "/reset"):
-            _parse_set_command("/set")
-
-
     def test_build_home_keyboard_contains_pause_and_settings_buttons(self):
         keyboard = _build_home_keyboard()
 
@@ -240,7 +199,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("📭 Telegram alerts are paused.", text)
 
 
-    def test_should_skip_alert_for_current_preferences_when_updated_volume_filter_blocks(self):
+    def test_should_skip_alert_for_current_preferences_only_checks_muted_state(self):
         alert = SimpleNamespace(user_id=10)
         opportunity = SimpleNamespace(net_roi=0.20, capital_required=1382.22)
         market = SimpleNamespace(raw_payload_json={})
@@ -251,6 +210,51 @@ class TelegramBotCommandsTests(unittest.TestCase):
             max_days_to_close=5,
             muted=False,
         )
+
+        should_skip = _should_skip_alert_for_current_preferences(
+            alert,
+            opportunity,
+            market,
+            market,
+            preferences,
+        )
+
+        self.assertFalse(should_skip)
+
+
+    def test_should_skip_alert_for_current_preferences_when_muted(self):
+        alert = SimpleNamespace(user_id=10)
+        opportunity = SimpleNamespace(net_roi=0.20, capital_required=50.0)
+        market = SimpleNamespace(raw_payload_json={})
+        preferences = UserPreference(
+            user_id=10,
+            min_roi_percent=5.0,
+            max_capital_usd=150.0,
+            max_days_to_close=5,
+            muted=True,
+        )
+
+        should_skip = _should_skip_alert_for_current_preferences(
+            alert,
+            opportunity,
+            market,
+            market,
+            preferences,
+        )
+
+        self.assertTrue(should_skip)
+
+
+    def test_should_skip_alert_for_current_preferences_when_muted_in_dict(self):
+        alert = SimpleNamespace(user_id=10)
+        opportunity = SimpleNamespace(net_roi=0.20, capital_required=50.0)
+        market = SimpleNamespace(raw_payload_json={})
+        preferences = {
+            "min_roi_percent": 5.0,
+            "max_capital_usd": 150.0,
+            "max_days_to_close": 5,
+            "muted": True,
+        }
 
         should_skip = _should_skip_alert_for_current_preferences(
             alert,
@@ -468,7 +472,7 @@ class TelegramBotRevalidationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         calculator = SimpleNamespace(
-            calculate_opportunities=lambda directions: [
+            calculate_opportunities=lambda directions, max_capital=None: [
                 {
                     "direction": "A_no_B_yes",
                     "avg_price_leg_1": 0.40,
@@ -525,7 +529,7 @@ class TelegramBotRevalidationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         calculator = SimpleNamespace(
-            calculate_opportunities=lambda directions: [
+            calculate_opportunities=lambda directions, max_capital=None: [
                 {
                     "direction": "A_yes_B_no",
                     "avg_price_leg_1": 0.41,
@@ -552,3 +556,51 @@ class TelegramBotRevalidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(opportunity.avg_price_leg_1, 0.41)
         self.assertEqual(opportunity.avg_price_leg_2, 0.52)
         self.assertEqual(opportunity.shares, 12.0)
+
+
+    async def test_revalidate_alert_opportunity_applies_user_max_capital(self):
+        opportunity = SimpleNamespace(
+            direction="A_yes_B_no",
+            price_leg_1=0.0,
+            price_leg_2=0.0,
+            avg_price_leg_1=0.0,
+            avg_price_leg_2=0.0,
+            shares=0.0,
+            capital_required=0.0,
+            gross_profit=0.0,
+            net_profit=0.0,
+            gross_roi=0.0,
+            net_roi=0.0,
+            calculation_json=None,
+        )
+        pair = SimpleNamespace(id=7)
+        orderbook_service = SimpleNamespace(
+            fetch_orderbooks_for_pairs=AsyncMock(
+                return_value=[
+                    {
+                        "directions": {
+                            "A_yes_B_no": {
+                                "poly": [(0.41, 12)],
+                                "pf": [(0.52, 12)],
+                            }
+                        }
+                    }
+                ]
+            )
+        )
+        with patch("arbitrage_bot.core.config.settings.FEE_POLYMARKET_BPS", 0.0), \
+             patch("arbitrage_bot.core.config.settings.FEE_PREDICT_FUN_BPS", 0.0):
+            calculator = ArbitrageCalculator()
+
+            result = await _revalidate_alert_opportunity(
+                object(),
+                opportunity,
+                pair,
+                orderbook_service,
+                calculator,
+                preferences={"max_capital_usd": 4.65},
+            )
+
+        self.assertTrue(result)
+        self.assertAlmostEqual(opportunity.capital_required, 4.65)
+        self.assertAlmostEqual(opportunity.shares, 5.0)

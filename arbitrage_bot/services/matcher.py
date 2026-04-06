@@ -77,6 +77,16 @@ class MatcherService:
     def explain_match(self, poly_market, pf_market, poly_signature=None, pf_signature=None):
         poly_signature = poly_signature or self.build_market_signature(poly_market)
         pf_signature = pf_signature or self.build_market_signature(pf_market)
+
+        if poly_signature["variant"] != pf_signature["variant"]:
+            return self._build_rejection(
+                poly_market,
+                pf_market,
+                poly_signature,
+                pf_signature,
+                "market_variant_mismatch",
+            )
+
         direct_condition_match = self._has_direct_condition_match(poly_market, pf_market)
         if direct_condition_match:
             outcome_mapping = self._build_outcome_mapping(
@@ -487,6 +497,27 @@ class MatcherService:
         return "generic"
 
 
+    def _detect_market_variant(self, market):
+        raw_payload = getattr(market, "raw_payload_json", None) or {}
+        parts = [
+            getattr(market, "title", "") or "",
+            getattr(market, "slug", "") or "",
+            raw_payload.get("groupItemTitle") or "",
+            raw_payload.get("question") or "",
+            raw_payload.get("category") or "",
+            raw_payload.get("subcategory") or "",
+        ]
+        haystack = self.normalizer.normalize_text(" ".join(str(part) for part in parts if part))
+
+        if any(token in haystack for token in ("spread", "handicap", "run line", "puck line")):
+            return "spread"
+
+        if any(token in haystack for token in ("total", "totals", "o u", "over under")):
+            return "total"
+
+        return "moneyline"
+
+
     def _participant_similarity(self, left, right):
         if not left["tokens"] or not right["tokens"]:
             return 0.0
@@ -787,6 +818,7 @@ class MatcherService:
             "entities": self.normalizer.extract_entities(market.title),
             "participants": participants,
             "kind": self._detect_market_kind(market, participants),
+            "variant": self._detect_market_variant(market),
         }
 
 

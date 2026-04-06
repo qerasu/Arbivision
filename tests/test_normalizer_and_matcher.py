@@ -63,14 +63,18 @@ class MatcherServiceTests(unittest.TestCase):
         poly_market = SimpleNamespace(
             id=10,
             title="Memphis Grizzlies vs Charlotte Hornets",
+            slug="memphis-grizzlies-vs-charlotte-hornets",
             outcomes_json=[{"id": "poly-a", "label": "Grizzlies"}, {"id": "poly-b", "label": "Hornets"}],
             raw_payload_json={"conditionId": "cond-1"},
+            category="sports",
         )
         pf_market = SimpleNamespace(
             id=20,
             title="Grizzlies vs. Hornets",
+            slug="grizzlies-vs-hornets",
             outcomes_json=[{"id": "pf-a", "label": "Grizzlies"}, {"id": "pf-b", "label": "Hornets"}],
             raw_payload_json={"polymarketConditionIds": ["cond-1"]},
+            category="sports",
         )
 
         pair = self.matcher.match_candidates(poly_market, pf_market)
@@ -87,6 +91,29 @@ class MatcherServiceTests(unittest.TestCase):
                 "confidence": "medium",
             },
         )
+
+
+    def test_rejects_direct_condition_match_when_market_variants_differ(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Spread: Celtics (-6.5)",
+            slug="nba-cha-bos-2026-04-07-spread-home-6pt5",
+            outcomes_json=[{"id": "poly-a", "label": "Hornets"}, {"id": "poly-b", "label": "Celtics"}],
+            raw_payload_json={"conditionId": "cond-1", "groupItemTitle": "Spread -6.5"},
+            category="sports",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Hornets vs. Celtics",
+            slug="nba-cha-bos-2026-04-07",
+            outcomes_json=[{"id": "pf-a", "label": "Hornets"}, {"id": "pf-b", "label": "Celtics"}],
+            raw_payload_json={"polymarketConditionIds": ["cond-1"]},
+            category="sports",
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)
 
 
     def test_matches_team_event_when_titles_are_not_identical(self):
@@ -202,6 +229,35 @@ class MatcherServiceTests(unittest.TestCase):
                 "confidence": "medium",
             },
         )
+
+
+    def test_rejects_spread_market_against_moneyline_matchup(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Spread: Celtics (-6.5)",
+            slug="nba-cha-bos-2026-04-07-spread-home-6pt5",
+            outcomes_json=[
+                {"id": "poly-a", "label": "Hornets"},
+                {"id": "poly-b", "label": "Celtics"},
+            ],
+            raw_payload_json={"groupItemTitle": "Spread -6.5", "question": "Spread: Celtics (-6.5)"},
+            category="sports",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Hornets vs. Celtics",
+            slug="nba-cha-bos-2026-04-07",
+            outcomes_json=[
+                {"id": "pf-a", "label": "Hornets"},
+                {"id": "pf-b", "label": "Celtics"},
+            ],
+            raw_payload_json={"question": "Hornets vs. Celtics"},
+            category="sports",
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNone(pair)
 
 
     def test_rejects_matchup_against_single_team_future(self):

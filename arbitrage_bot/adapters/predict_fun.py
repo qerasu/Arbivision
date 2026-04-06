@@ -93,23 +93,30 @@ class PredictFunAdapter(BaseAdapter):
 
         cmd = [
             "curl",
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "10",
+            "--config",
+            "-",
+        ]
+
+        config_lines = [
+            "silent",
+            "show-error",
+            "fail",
+            "location",
+            "max-time = 10",
         ]
         for key, value in self.headers.items():
-            cmd.extend(["-H", f"{key}: {value}"])
-        cmd.append(url)
+            escaped_value = str(value).replace("\\", "\\\\").replace('"', '\\"')
+            config_lines.append(f'header = "{key}: {escaped_value}"')
+        config_lines.append(f'url = "{url}"')
+        config_payload = "\n".join(config_lines).encode("utf-8")
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        stdout, stderr = await proc.communicate(config_payload)
 
         if proc.returncode != 0:
             detail = stderr.decode().strip() or repr(original_exc)

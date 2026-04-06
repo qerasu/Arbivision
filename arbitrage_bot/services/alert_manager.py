@@ -13,7 +13,7 @@ class AlertManager:
         self.delta_roi = settings.ALERTS_DELTA_ROI_THRESHOLD_PERCENT / 100.0
 
 
-    async def process_opportunity(self, pair, calc_result, market_a=None, market_b=None, preferences=None):
+    async def process_opportunity(self, pair, calc_result):
         direction = calc_result["direction"]
         redis = await get_redis()
         dedupe_key = f"alert-dedupe:{pair.pair_hash}:{direction}"
@@ -30,8 +30,8 @@ class AlertManager:
             profit_diff = calc_result["net_profit"] - last_state["net_profit"]
             roi_diff = calc_result["net_roi"] - last_state["net_roi"]
 
-            # smart deduplication
-            if profit_diff < self.delta_profit and roi_diff < self.delta_roi:
+            # skip if change is insignificant in both dimensions
+            if abs(profit_diff) < self.delta_profit and abs(roi_diff) < self.delta_roi:
                 return False
 
         opp = ArbOpportunity(

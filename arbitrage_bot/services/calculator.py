@@ -7,7 +7,7 @@ class ArbitrageCalculator:
         self.fee_pf = settings.FEE_PREDICT_FUN_BPS / 10000.0
 
 
-    def calculate_opportunity(self, poly_asks, pf_asks):
+    def calculate_opportunity(self, poly_asks, pf_asks, max_capital=None):
         if not poly_asks or not pf_asks:
             return None
 
@@ -36,6 +36,16 @@ class ArbitrageCalculator:
                 break
 
             take_size = min(p_size, f_size)
+            if max_capital is not None:
+                remaining_capital = float(max_capital) - (cost_poly + cost_pf)
+                if remaining_capital <= 0:
+                    break
+                per_share_capital = net_p_price + net_f_price
+                if per_share_capital <= 0:
+                    return None
+                take_size = min(take_size, remaining_capital / per_share_capital)
+                if take_size <= 0:
+                    break
 
             shares += take_size
             cost_poly += take_size * net_p_price
@@ -75,13 +85,14 @@ class ArbitrageCalculator:
         }
 
 
-    def calculate_opportunities(self, direction_books):
+    def calculate_opportunities(self, direction_books, max_capital=None):
         opportunities = []
 
         for direction, books in (direction_books or {}).items():
             result = self.calculate_opportunity(
                 poly_asks=books.get("poly") or [],
                 pf_asks=books.get("pf") or [],
+                max_capital=max_capital,
             )
             if not result:
                 continue

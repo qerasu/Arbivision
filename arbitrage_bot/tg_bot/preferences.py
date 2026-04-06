@@ -52,6 +52,18 @@ def default_preferences():
     return dict(DEFAULT_PREFERENCES)
 
 
+def _make_default_preference(user_id):
+    return UserPreference(
+        user_id=user_id,
+        min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
+        min_capital_usd=DEFAULT_PREFERENCES["min_capital_usd"],
+        max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
+        min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
+        max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
+        muted=False,
+    )
+
+
 def _serialize_user_preferences(preferences):
     if preferences is None:
         return default_preferences()
@@ -100,15 +112,7 @@ async def ensure_telegram_user(db_session, chat_id, chat_type="private"):
             )
             db_session.add(telegram_chat)
             db_session.add(
-                UserPreference(
-                    user_id=user.id,
-                    min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
-                    min_capital_usd=DEFAULT_PREFERENCES["min_capital_usd"],
-                    max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
-                    min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
-                    max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
-                    muted=False,
-                )
+                _make_default_preference(user_id=user.id)
             )
             db_session.add(
                 Subscription(
@@ -125,15 +129,7 @@ async def ensure_telegram_user(db_session, chat_id, chat_type="private"):
             preferences = pref_result.scalars().first()
             if preferences is None:
                 db_session.add(
-                    UserPreference(
-                        user_id=telegram_chat.user_id,
-                        min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
-                        min_capital_usd=DEFAULT_PREFERENCES["min_capital_usd"],
-                        max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
-                        min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
-                        max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
-                        muted=False,
-                    )
+                    _make_default_preference(user_id=telegram_chat.user_id)
                 )
                 should_commit = True
 
@@ -182,15 +178,7 @@ async def get_user_preferences(db_session, chat_id, chat_type="private"):
     preferences = result.scalars().first()
 
     if preferences is None:
-        preferences = UserPreference(
-            user_id=telegram_chat.user_id,
-            min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
-            min_capital_usd=DEFAULT_PREFERENCES["min_capital_usd"],
-            max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
-            min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
-            max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
-            muted=False,
-        )
+        preferences = _make_default_preference(user_id=telegram_chat.user_id)
         db_session.add(preferences)
         await db_session.commit()
 
@@ -204,15 +192,7 @@ async def set_user_preference(db_session, chat_id, field_name, field_value):
     preferences = result.scalars().first()
 
     if preferences is None:
-        preferences = UserPreference(
-            user_id=telegram_chat.user_id,
-            min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
-            min_capital_usd=DEFAULT_PREFERENCES["min_capital_usd"],
-            max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
-            min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
-            max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
-            muted=False,
-        )
+        preferences = _make_default_preference(user_id=telegram_chat.user_id)
         db_session.add(preferences)
 
     setattr(preferences, field_name, field_value)
@@ -413,7 +393,7 @@ def format_setting_prompt(field_name, preferences):
     )
 
 
-def filter_reason_for_preferences(opportunity, market_a, market_b, preferences, now=None):
+def filter_reason_for_preferences(opportunity, market_a, market_b, preferences, now=None, skip_max_capital=False):
     min_roi = effective_min_roi(preferences)
     if min_roi is not None and opportunity.net_roi * 100 < float(min_roi):
         return "min_roi"
@@ -423,7 +403,7 @@ def filter_reason_for_preferences(opportunity, market_a, market_b, preferences, 
         return "min_capital"
 
     max_capital = preferences.get("max_capital_usd")
-    if max_capital is not None and opportunity.capital_required > float(max_capital):
+    if not skip_max_capital and max_capital is not None and opportunity.capital_required > float(max_capital):
         return "max_capital"
 
     min_profit = preferences.get("min_profit_usd")
@@ -553,15 +533,8 @@ async def toggle_mute(db_session, chat_id):
     preferences = result.scalars().first()
 
     if preferences is None:
-        preferences = UserPreference(
-            user_id=telegram_chat.user_id,
-            min_roi_percent=DEFAULT_PREFERENCES["min_roi_percent"],
-            min_capital_usd=DEFAULT_PREFERENCES["min_capital_usd"],
-            max_capital_usd=DEFAULT_PREFERENCES["max_capital_usd"],
-            min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
-            max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
-            muted=True,
-        )
+        preferences = _make_default_preference(user_id=telegram_chat.user_id)
+        preferences.muted = True
         db_session.add(preferences)
     else:
         preferences.muted = not preferences.muted

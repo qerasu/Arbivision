@@ -2,6 +2,7 @@ import asyncio
 import time
 from collections import defaultdict
 import json
+from datetime import datetime, timezone
 from arbitrage_bot.core.database import AsyncSessionLocal
 from arbitrage_bot.core.redis import get_redis
 from arbitrage_bot.models.orm import Market, MarketPair
@@ -10,10 +11,12 @@ from arbitrage_bot.services.matcher import MatcherService
 from arbitrage_bot.services.orderbook import OrderbookService
 from arbitrage_bot.services.calculator import ArbitrageCalculator
 from arbitrage_bot.services.alert_manager import AlertManager
+from arbitrage_bot.services.fanout_manager import FanoutManager
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.core.observability import incr_counter
 from arbitrage_bot.services.system_notifier import format_error_details, send_system_error_notification
+from arbitrage_bot.tg_bot.bot import send_alert_immediately
 from sqlalchemy.future import select
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -52,11 +55,12 @@ async def _run_cycle(db):
     orderbook_service = OrderbookService()
     calculator = ArbitrageCalculator()
     alert_manager = AlertManager(db)
+    fanout_manager = FanoutManager(db)
 
     try:
         await ingestion.sync_markets()
         await _upsert_market_pairs(db, matcher)
-        cycle_stats = await _process_candidates(db, orderbook_service, calculator, alert_manager)
+        cycle_stats = await _process_candidates(db, orderbook_service, calculator, alert_manager, fanout_manager)
         log.info(
             "worker cycle summary",
             approved_pairs=cycle_stats["approved_pairs"],
@@ -203,7 +207,7 @@ def _mark_stale_pairs(pairs):
     return changed
 
 
-async def _process_candidates(db, orderbook_service, calculator, alert_manager):
+async def _process_candidates(db, orderbook_service, calculator, alert_manager, fanout_manager):
     pair_stmt = select(MarketPair).where(
         MarketPair.status.in_(["auto_approved", "approved"])
     )
@@ -236,21 +240,36 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
     for item in orderbooks_data:
         pair = item["pair"]
         directions = item.get("directions")
+        market_a = market_map.get(pair.market_id_a)
+        market_b = market_map.get(pair.market_id_b)
         calc_results = calculator.calculate_opportunities(directions)
         if not calc_results:
             incr_counter("calculator.drop.no_profitable_directions")
             continue
 
-        market_a = market_map.get(pair.market_id_a)
-        market_b = market_map.get(pair.market_id_b)
         for calc_result in calc_results:
             try:
-                await alert_manager.process_opportunity(
-                    pair,
-                    calc_result,
-                    market_a=market_a,
-                    market_b=market_b,
+                opportunity = await alert_manager.process_opportunity(pair, calc_result)
+                deliveries = await fanout_manager.create_alert_deliveries(
+                    opportunity,
+                    market_a,
+                    market_b,
                 )
+                for delivery in deliveries:
+                    await send_alert_immediately(
+                        delivery["alert"],
+                        opportunity,
+                        pair,
+                        market_a,
+                        market_b,
+                        delivery["preferences"],
+                        directions,
+                        calculator,
+                    )
+                opportunity.fanout_status = "processed"
+                opportunity.fanout_processed_at = datetime.now(timezone.utc)
+                opportunity.fanout_error_message = None
+                await db.commit()
                 incr_counter("worker.opportunity_processed")
                 opportunity_count += 1
             except Exception as e:
@@ -260,6 +279,10 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager):
                     error=format_error_details(e),
                 )
                 incr_counter("worker.opportunity_failed")
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
                 await send_system_error_notification("worker", f"process opportunity pair {pair.id}", e)
 
     return {
@@ -377,10 +400,10 @@ async def _set_empty_count(pair_hash, count):
                 _EMPTY_COUNT_TTL_SECONDS,
                 str(count),
             )
+            return
     except Exception:
-        _pair_empty_counts[pair_hash] = (count, now)
-    else:
-        _pair_empty_counts[pair_hash] = (count, now)
+        pass
+    _pair_empty_counts[pair_hash] = (count, now)
 
 
 async def _clear_empty_count(pair_hash):
@@ -392,6 +415,25 @@ async def _clear_empty_count(pair_hash):
         pass
 
     _pair_empty_counts.pop(pair_hash, None)
+
+
+async def _increment_empty_count(pair_hash):
+    now = time.monotonic()
+    try:
+        redis = await get_redis()
+        if redis is not None:
+            key = _pair_empty_count_key(pair_hash)
+            pipe = redis.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, _EMPTY_COUNT_TTL_SECONDS)
+            results = await pipe.execute()
+            return int(results[0])
+    except Exception:
+        pass
+    entry = _pair_empty_counts.get(pair_hash)
+    count = (int(entry[0]) if entry else 0) + 1
+    _pair_empty_counts[pair_hash] = (count, now)
+    return count
 
 
 async def _clear_empty_counts_for_pairs(pairs):
@@ -411,13 +453,11 @@ async def _filter_skippable_pairs(pairs):
 
 
 async def _update_empty_counts(checked_pairs, pairs_with_data):
-    now = time.monotonic()
     for pair in checked_pairs:
         if pair.pair_hash in pairs_with_data:
             await _clear_empty_count(pair.pair_hash)
         else:
-            prev_count = await _get_empty_count(pair.pair_hash)
-            await _set_empty_count(pair.pair_hash, prev_count + 1)
+            await _increment_empty_count(pair.pair_hash)
 
     # evict oldest entries when dict grows too large
     if len(_pair_empty_counts) > _EMPTY_COUNTS_MAX_SIZE:

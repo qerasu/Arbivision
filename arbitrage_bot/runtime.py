@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from arbitrage_bot.fanout_worker import run_fanout_loop
 from arbitrage_bot.services.system_notifier import close_shared_bot
+from arbitrage_bot.tg_bot.bot import close_shared_delivery_bot
 from arbitrage_bot.tg_bot.bot import start_polling
 from arbitrage_bot.worker import run_sync_loop
 
@@ -17,6 +18,7 @@ async def managed_runtime(*coroutines):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await close_shared_delivery_bot()
         await close_shared_bot()
 
 

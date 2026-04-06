@@ -222,6 +222,36 @@ class WorkerPairLifecycleTests(unittest.TestCase):
         self.assertIn(2, worker_module._market_signature_cache)
 
 
+class FakePipeline:
+    def __init__(self, redis):
+        self._redis = redis
+        self._commands = []
+
+
+    def incr(self, key):
+        self._commands.append(("incr", key))
+        return self
+
+
+    def expire(self, key, ttl):
+        self._commands.append(("expire", key, ttl))
+        return self
+
+
+    async def execute(self):
+        results = []
+        for cmd in self._commands:
+            if cmd[0] == "incr":
+                key = cmd[1]
+                current = int(self._redis.data.get(key, "0"))
+                current += 1
+                self._redis.data[key] = str(current)
+                results.append(current)
+            elif cmd[0] == "expire":
+                results.append(True)
+        return results
+
+
 class FakeRedis:
     def __init__(self):
         self.data = {}
@@ -237,6 +267,10 @@ class FakeRedis:
 
     async def delete(self, key):
         self.data.pop(key, None)
+
+
+    def pipeline(self):
+        return FakePipeline(self)
 
 
 class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
@@ -309,7 +343,8 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         calculator = SimpleNamespace(calculate_opportunities=Mock(return_value=[]))
-        alert_manager = SimpleNamespace()
+        alert_manager = SimpleNamespace(process_opportunity=AsyncMock())
+        fanout_manager = SimpleNamespace(create_alert_deliveries=AsyncMock(return_value=[]))
 
         with patch("arbitrage_bot.worker._filter_skippable_pairs", new=AsyncMock(return_value=[
             SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
@@ -319,8 +354,11 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "arbitrage_bot.worker._update_empty_counts",
             new=AsyncMock(),
+        ), patch(
+            "arbitrage_bot.worker.send_alert_immediately",
+            new=AsyncMock(),
         ):
-            result = await _process_candidates(fake_db, orderbook_service, calculator, alert_manager)
+            result = await _process_candidates(fake_db, orderbook_service, calculator, alert_manager, fanout_manager)
 
         self.assertEqual(result["opportunities"], 0)
         self.assertEqual(snapshot_counters()["calculator.drop.no_profitable_directions"], 1)

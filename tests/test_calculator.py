@@ -66,3 +66,20 @@ class ArbitrageCalculatorTests(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["direction"], "A_yes_B_no")
+
+
+    def test_calculates_opportunity_with_max_capital_limit(self):
+        with patch("arbitrage_bot.core.config.settings.FEE_POLYMARKET_BPS", 0.0), \
+             patch("arbitrage_bot.core.config.settings.FEE_PREDICT_FUN_BPS", 0.0):
+            calculator = ArbitrageCalculator()
+
+        result = calculator.calculate_opportunity(
+            poly_asks=[(0.40, 10)],
+            pf_asks=[(0.50, 10)],
+            max_capital=4.5,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["capital_required"], 4.5)
+        self.assertAlmostEqual(result["shares"], 5.0)
+        self.assertAlmostEqual(result["net_profit"], 0.5)

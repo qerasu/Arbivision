@@ -15,13 +15,12 @@ from arbitrage_bot.tg_bot.preferences import filter_reason_for_preferences
 from arbitrage_bot.tg_bot.preferences import get_global_preferences
 from arbitrage_bot.tg_bot.preferences import get_telegram_alert_targets
 
-_delivery_targets_cache = {
-    "value": None,
-    "expires_at": 0.0,
-}
 
 
 class FanoutManager:
+    _cache_value = None
+    _cache_expires_at = 0.0
+
     def __init__(self, db_session):
         self.db = db_session
 
@@ -39,7 +38,6 @@ class FanoutManager:
                 incr_counter("fanout.opportunity_claimed")
                 created_alerts = await self._fanout_opportunity(
                     opportunity,
-                    pair,
                     market_a,
                     market_b,
                     delivery_targets=delivery_targets,
@@ -86,55 +84,77 @@ class FanoutManager:
         return row
 
 
-    async def _fanout_opportunity(self, opportunity, pair, market_a, market_b, delivery_targets=None):
+    async def _fanout_opportunity(self, opportunity, market_a, market_b, delivery_targets=None):
+        deliveries = await self._create_alert_deliveries(
+            opportunity,
+            market_a,
+            market_b,
+            delivery_targets=delivery_targets,
+        )
+        return len(deliveries)
+
+
+    async def create_alert_deliveries(self, opportunity, market_a, market_b, delivery_targets=None):
+        return await self._create_alert_deliveries(
+            opportunity,
+            market_a,
+            market_b,
+            delivery_targets=delivery_targets,
+        )
+
+
+    async def _create_alert_deliveries(self, opportunity, market_a, market_b, delivery_targets=None):
         targets = delivery_targets if delivery_targets is not None else await self._get_delivery_targets()
         eligible_targets, drop_reasons = self._filter_targets(opportunity, targets, market_a, market_b)
         if not eligible_targets:
             incr_counter("fanout.opportunity_filtered_all_targets")
             for drop_reason in sorted(drop_reasons):
                 incr_counter(f"fanout.drop.{drop_reason}")
-            return 0
+            return []
 
         existing_stmt = select(Alert.telegram_chat_id).where(Alert.opportunity_id == opportunity.id)
         existing_result = await self.db.execute(existing_stmt)
         existing_chat_ids = set(existing_result.scalars().all())
 
-        created_count = 0
+        deliveries = []
         for target in eligible_targets:
             chat_id = target["telegram_chat_id"]
             if chat_id in existing_chat_ids:
                 continue
 
             try:
+                alert = Alert(
+                    opportunity_id=opportunity.id,
+                    user_id=target.get("user_id"),
+                    subscription_id=target.get("subscription_id"),
+                    telegram_chat_id=chat_id,
+                    message_hash=str(opportunity.id),
+                    status="queued",
+                    attempt_count=0,
+                )
                 async with self.db.begin_nested():
-                    self.db.add(
-                        Alert(
-                            opportunity_id=opportunity.id,
-                            user_id=target.get("user_id"),
-                            subscription_id=target.get("subscription_id"),
-                            telegram_chat_id=chat_id,
-                            message_hash=str(opportunity.id),
-                            status="queued",
-                            attempt_count=0,
-                        )
-                    )
+                    self.db.add(alert)
                     await self.db.flush()
+                    deliveries.append(
+                        {
+                            "alert": alert,
+                            "preferences": target.get("preferences") or {},
+                        }
+                    )
                 existing_chat_ids.add(chat_id)
-                created_count += 1
                 incr_counter("fanout.alert_created")
             except IntegrityError:
                 existing_chat_ids.add(chat_id)
                 incr_counter("fanout.alert_duplicate")
 
-        return created_count
+        return deliveries
 
 
     async def _get_delivery_targets(self):
         now = time.monotonic()
-        cached_value = _delivery_targets_cache["value"]
-        if cached_value is not None and _delivery_targets_cache["expires_at"] > now:
+        if FanoutManager._cache_value is not None and FanoutManager._cache_expires_at > now:
             incr_counter("fanout.delivery_targets_cache_hit")
-            return cached_value
+            return FanoutManager._cache_value
         incr_counter("fanout.delivery_targets_cache_miss")
 
         targets = await get_telegram_alert_targets(self.db)
@@ -157,8 +177,8 @@ class FanoutManager:
 
 
     def _set_delivery_targets_cache(self, targets):
-        _delivery_targets_cache["value"] = [dict(target) for target in targets]
-        _delivery_targets_cache["expires_at"] = time.monotonic() + settings.FANOUT_TARGET_CACHE_TTL_SECONDS
+        FanoutManager._cache_value = [dict(target) for target in targets]
+        FanoutManager._cache_expires_at = time.monotonic() + settings.FANOUT_TARGET_CACHE_TTL_SECONDS
 
 
     def _filter_targets(self, opportunity, targets, market_a, market_b):
@@ -177,6 +197,7 @@ class FanoutManager:
                 market_a,
                 market_b,
                 preferences,
+                skip_max_capital=True,
             )
             if filter_reason:
                 drop_reasons.add(filter_reason)

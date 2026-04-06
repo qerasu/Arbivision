@@ -138,7 +138,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-            opportunity = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+            opportunity = await manager.process_opportunity(pair, calc_result)
 
         self.assertEqual(opportunity.fanout_status, "queued")
         self.assertEqual(db.flush_calls, 1)
@@ -171,7 +171,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-            result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+            result = await manager.process_opportunity(pair, calc_result)
 
         self.assertFalse(result)
         self.assertEqual(db.commit_calls, 0)
@@ -208,7 +208,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
         try:
             with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-                result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+                result = await manager.process_opportunity(pair, calc_result)
         finally:
             settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
 
@@ -237,7 +237,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
             with self.assertRaisesRegex(RuntimeError, "commit failed"):
-                await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+                await manager.process_opportunity(pair, calc_result)
 
         self.assertEqual(db.rollback_calls, 1)
         self.assertEqual(redis.data, {})
@@ -261,7 +261,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=None):
-            opportunity = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+            opportunity = await manager.process_opportunity(pair, calc_result)
 
         self.assertEqual(opportunity.fanout_status, "queued")
         self.assertEqual(db.commit_calls, 1)
@@ -297,7 +297,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
         settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
         try:
             with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
-                result = await manager.process_opportunity(pair, calc_result, market_a=market_a, market_b=market_b)
+                result = await manager.process_opportunity(pair, calc_result)
         finally:
             settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
 
@@ -330,17 +330,7 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
                 "arbitrage_bot.services.alert_manager.get_redis",
                 return_value=redis,
             ):
-                opportunity = await manager.process_opportunity(
-                    pair,
-                    calc_result,
-                    market_a=market_a,
-                    market_b=market_b,
-                    preferences={
-                        "min_roi_percent": None,
-                        "max_capital_usd": None,
-                        "max_days_to_close": None,
-                    },
-                )
+                opportunity = await manager.process_opportunity(pair, calc_result)
         finally:
             settings.TELEGRAM_DEFAULT_CHAT_IDS = original_chat_ids
 

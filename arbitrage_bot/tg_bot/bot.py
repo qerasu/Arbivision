@@ -31,6 +31,7 @@ from arbitrage_bot.tg_bot.preferences import filter_reason_for_preferences
 
 log = get_logger("tg_bot")
 _shared_dp = None
+_shared_delivery_bot = None
 
 
 def setup_bot():
@@ -48,6 +49,16 @@ def setup_bot():
         _shared_dp.include_router(handlers.router)
 
     return bot, _shared_dp
+
+
+def _get_delivery_bot():
+    global _shared_delivery_bot
+    token = settings.TELEGRAM_BOT_TOKEN
+    if not token:
+        return None
+    if _shared_delivery_bot is None:
+        _shared_delivery_bot = Bot(token=token)
+    return _shared_delivery_bot
 
 
 def _build_bot_commands():
@@ -251,6 +262,94 @@ async def _send_alert(bot, alert, opportunity, pair, market_a, market_b_row):
     incr_counter("telegram.alert_sent")
 
 
+def _clone_opportunity(opportunity):
+    payload = {
+        "direction": getattr(opportunity, "direction", None),
+        "avg_price_leg_1": getattr(opportunity, "avg_price_leg_1", 0.0),
+        "avg_price_leg_2": getattr(opportunity, "avg_price_leg_2", 0.0),
+        "shares": getattr(opportunity, "shares", 0.0),
+        "capital_required": getattr(opportunity, "capital_required", 0.0),
+        "gross_profit": getattr(opportunity, "gross_profit", 0.0),
+        "net_profit": getattr(opportunity, "net_profit", 0.0),
+        "gross_roi": getattr(opportunity, "gross_roi", 0.0),
+        "net_roi": getattr(opportunity, "net_roi", 0.0),
+        "calculation_json": getattr(opportunity, "calculation_json", None),
+    }
+    return type("OpportunitySnapshot", (), payload)()
+
+
+def _recalculate_opportunity_from_directions(opportunity, directions, calculator, preferences=None):
+    max_capital = None
+    if preferences is not None:
+        max_capital = preferences.get("max_capital_usd")
+    calc_results = calculator.calculate_opportunities(
+        directions,
+        max_capital=max_capital,
+    )
+    current_result = next(
+        (
+            result
+            for result in calc_results
+            if result.get("direction") == opportunity.direction
+        ),
+        None,
+    )
+    if current_result is None:
+        return None
+
+    snapshot = _clone_opportunity(opportunity)
+    _apply_calc_result_to_opportunity(snapshot, current_result)
+    return snapshot
+
+
+async def send_alert_immediately(alert, opportunity, pair, market_a, market_b, preferences, directions, calculator):
+    bot = _get_delivery_bot()
+    if bot is None:
+        return False
+
+    current_preferences = _build_runtime_preferences(preferences)
+    if bool(current_preferences.get("muted")):
+        alert.status = "cancelled"
+        alert.next_retry_at = None
+        alert.error_message = "filtered by updated preferences"
+        incr_counter("telegram.alert_cancelled_preferences")
+        return False
+
+    prepared_opportunity = _recalculate_opportunity_from_directions(
+        opportunity,
+        directions,
+        calculator,
+        preferences=current_preferences,
+    )
+    if prepared_opportunity is None:
+        alert.status = "cancelled"
+        alert.next_retry_at = None
+        alert.error_message = "opportunity is no longer available"
+        incr_counter("telegram.alert_cancelled_revalidation")
+        return False
+
+    filter_reason = filter_reason_for_preferences(
+        prepared_opportunity,
+        market_a,
+        market_b,
+        current_preferences,
+    )
+    if filter_reason:
+        alert.status = "cancelled"
+        alert.next_retry_at = None
+        alert.error_message = f"filtered by updated preferences: {filter_reason}"
+        incr_counter("telegram.alert_cancelled_preferences")
+        return False
+
+    now = datetime.now(timezone.utc)
+    try:
+        await _send_alert(bot, alert, prepared_opportunity, pair, market_a, market_b)
+        return True
+    except Exception as exc:
+        _mark_alert_retry(alert, exc, now)
+        return False
+
+
 def _mark_alert_retry(alert, exc, now):
     attempt_count = int(getattr(alert, "attempt_count", 0) or 0) + 1
     alert.attempt_count = attempt_count
@@ -268,8 +367,6 @@ def _mark_alert_retry(alert, exc, now):
 
 
 def _apply_calc_result_to_opportunity(opportunity, calc_result):
-    opportunity.price_leg_1 = calc_result["avg_price_leg_1"]
-    opportunity.price_leg_2 = calc_result["avg_price_leg_2"]
     opportunity.avg_price_leg_1 = calc_result["avg_price_leg_1"]
     opportunity.avg_price_leg_2 = calc_result["avg_price_leg_2"]
     opportunity.shares = calc_result["shares"]
@@ -281,13 +378,19 @@ def _apply_calc_result_to_opportunity(opportunity, calc_result):
     opportunity.calculation_json = calc_result
 
 
-async def _revalidate_alert_opportunity(session, opportunity, pair, orderbook_service, calculator):
+async def _revalidate_alert_opportunity(session, opportunity, pair, orderbook_service, calculator, preferences=None):
     orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs([pair], session)
     if not orderbooks_data:
         return False
 
     current_item = orderbooks_data[0]
-    calc_results = calculator.calculate_opportunities(current_item.get("directions"))
+    max_capital = None
+    if preferences is not None:
+        max_capital = preferences.get("max_capital_usd")
+    calc_results = calculator.calculate_opportunities(
+        current_item.get("directions"),
+        max_capital=max_capital,
+    )
     if not calc_results:
         return False
 
@@ -328,7 +431,7 @@ async def _claim_deliverable_alert(session, now):
     if row is None:
         return None
 
-    alert, _, _, _, _, _ = row
+    alert = row[0]
     alert.status = "processing"
     return row
 
@@ -339,10 +442,17 @@ def _build_runtime_preferences(preferences):
         values["muted"] = False
         return values
 
+    if isinstance(preferences, dict):
+        values.update(preferences)
+        values["muted"] = bool(values.get("muted", False))
+        return values
+
     values.update(
         {
             "min_roi_percent": preferences.min_roi_percent,
+            "min_capital_usd": preferences.min_capital_usd,
             "max_capital_usd": preferences.max_capital_usd,
+            "min_profit_usd": preferences.min_profit_usd,
             "max_days_to_close": preferences.max_days_to_close,
             "muted": preferences.muted,
         }
@@ -350,22 +460,12 @@ def _build_runtime_preferences(preferences):
     return values
 
 
-def _should_skip_alert_for_current_preferences(alert, opportunity, market_a, market_b, preferences):
+def _should_skip_alert_for_current_preferences(alert, _opportunity, _market_a, _market_b, preferences):
     if getattr(alert, "user_id", None) is None:
         return False
 
     current_preferences = _build_runtime_preferences(preferences)
-    if current_preferences.get("muted"):
-        return True
-
-    return bool(
-        filter_reason_for_preferences(
-            opportunity,
-            market_a,
-            market_b,
-            current_preferences,
-        )
-    )
+    return bool(current_preferences.get("muted"))
 
 
 async def _drain_queued_alerts(bot):
@@ -382,12 +482,13 @@ async def _drain_queued_alerts(bot):
                             break
 
                         alert, opportunity, pair, market_a, market_b_row, preferences = row
+                        current_preferences = _build_runtime_preferences(preferences)
                         if _should_skip_alert_for_current_preferences(
                             alert,
                             opportunity,
                             market_a,
                             market_b_row,
-                            preferences,
+                            current_preferences,
                         ):
                             alert.status = "cancelled"
                             alert.next_retry_at = None
@@ -402,6 +503,7 @@ async def _drain_queued_alerts(bot):
                                 pair,
                                 orderbook_service,
                                 calculator,
+                                preferences=current_preferences,
                             )
                         except Exception as exc:
                             _mark_alert_retry(alert, exc, now)
@@ -413,6 +515,19 @@ async def _drain_queued_alerts(bot):
                             alert.next_retry_at = None
                             alert.error_message = "opportunity is no longer available"
                             incr_counter("telegram.alert_cancelled_revalidation")
+                            await session.commit()
+                            continue
+                        filter_reason = filter_reason_for_preferences(
+                            opportunity,
+                            market_a,
+                            market_b_row,
+                            current_preferences,
+                        )
+                        if filter_reason:
+                            alert.status = "cancelled"
+                            alert.next_retry_at = None
+                            alert.error_message = f"filtered by updated preferences: {filter_reason}"
+                            incr_counter("telegram.alert_cancelled_preferences")
                             await session.commit()
                             continue
                         try:
@@ -465,6 +580,13 @@ async def start_polling():
             log.error("fatal error in polling loop", error=format_error_details(e))
 
         await asyncio.sleep(5)
+
+
+async def close_shared_delivery_bot():
+    global _shared_delivery_bot
+    if _shared_delivery_bot is not None:
+        await _shared_delivery_bot.session.close()
+        _shared_delivery_bot = None
 
 
 if __name__ == "__main__":

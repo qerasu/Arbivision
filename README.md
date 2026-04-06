@@ -17,6 +17,7 @@ Arbivision — арбитражный бот, который мониторит 
   - [OrderbookService](#orderbookservice)
   - [ArbitrageCalculator](#arbitragecalculator)
   - [AlertManager](#alertmanager)
+  - [FanoutManager](#fanoutmanager)
   - [SystemNotifier](#systemnotifier)
 - [Telegram-бот](#telegram-бот)
   - [bot.py — ядро бота](#botpy--ядро-бота)
@@ -71,9 +72,10 @@ Arbivision — арбитражный бот, который мониторит 
 5. Пишет PID в tempfile для корректной остановки
 
 **`main.py` (FastAPI lifespan):**
-1. Создаёт `asyncio.Task` для `run_sync_loop()` (worker)
-2. Создаёт `asyncio.Task` для `start_polling()` (Telegram-бот)
-3. При shutdown отменяет оба таска и закрывает shared-сессию system_notifier
+1. Создаёт `asyncio.Task` для `run_sync_loop()` (worker), если режим это разрешает
+2. Создаёт `asyncio.Task` для `run_fanout_loop()` (fanout), если режим это разрешает
+3. Создаёт `asyncio.Task` для `start_polling()` (Telegram-бот), если режим это разрешает
+4. При shutdown отменяет все таски и закрывает shared-сессию system_notifier
 
 **Split runtime:**
 1. `APP_RUNTIME_MODE=all` — worker + fanout + telegram внутри API-процесса
@@ -103,20 +105,23 @@ Arbivision — арбитражный бот, который мониторит 
 `POSTGRES_*` | Параметры подключения к PostgreSQL | `localhost:5432`
 `REDIS_*` | Параметры подключения к Redis | `localhost:6379`
 `PREDICT_FUN_API_KEY` | API-ключ для Predict.Fun | (пусто)
-`FEE_POLYMARKET_BPS` | Комиссия Polymarket в BPS | 100.0 (1%)
+`FEE_POLYMARKET_BPS` | Комиссия Polymarket в BPS | 180.0 (1.8%)
 `FEE_PREDICT_FUN_BPS` | Комиссия Predict.Fun в BPS | 200.0 (2%)
 `MARKET_REFRESH_SECONDS` | Интервал синхронизации рынков | 60 сек
 `EMPTY_ORDERBOOK_THRESHOLD` | Лимит пустых стаканов до полного игнорирования пары | 3
 `ORDERBOOK_CACHE_TTL_SECONDS` | TTL in-memory кеша ордербуков | 2 сек
-`ORDERBOOK_CACHE_MAX_ITEMS` | Максимальный размер кеша ордербуков | 2048
-`ORDERBOOK_POLYMARKET_BATCH_SIZE` | Размер batch-запроса CLOB-книг Polymarket | 200
-`ORDERBOOK_PREDICT_FUN_CONCURRENCY` | Конкурентность запросов Predict.Fun orderbook | 4
+`ORDERBOOK_CACHE_MAX_ITEMS` | Максимальный размер кеша ордербуков | 5000
+`ORDERBOOK_POLYMARKET_BATCH_SIZE` | Размер batch-запроса CLOB-книг Polymarket | 100
+`ORDERBOOK_PREDICT_FUN_CONCURRENCY` | Конкурентность запросов Predict.Fun orderbook | 8
 `ALERTS_DEDUPE_TTL_SECONDS` | TTL дедупликации алертов в Redis | 600 сек
 `ALERTS_DELTA_PROFIT_THRESHOLD_USD` | Минимальный прирост профита для повторного алерта | $3
 `ALERTS_DELTA_ROI_THRESHOLD_PERCENT` | Минимальный прирост ROI для повторного алерта | 0.5%
 `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота | (пусто)
-`TELEGRAM_DEFAULT_CHAT_IDS` | Чаты для отправки алертов (через запятую) | (пусто)
+`TELEGRAM_DEFAULT_CHAT_IDS` | Legacy fallback-чаты для алертов, если в БД нет ни одной подписки | (пусто)
 `TELEGRAM_SYSTEM_ERROR_CHAT_IDS` | Чаты для системных ошибок | (пусто)
+`FANOUT_TARGET_CACHE_TTL_SECONDS` | TTL кеша получателей fanout | 5 сек
+`TELEGRAM_ALERTS_POLL_SECONDS` | Интервал poll/send циклов fanout и Telegram-доставки | 0.5 сек
+`APP_RUNTIME_MODE` | Режим запуска: `all`, `worker`, `fanout`, `telegram` | `all`
 `TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS` | Кулдаун между одинаковыми ошибками | 300 сек
 
 ### database.py
@@ -226,6 +231,7 @@ category, slug
 - `entities` — извлечённые даты и числа
 - `participants` — извлечённые участники (команды, спортсмены)
 - `kind` — тип рынка: `matchup` (A vs B), `proposition` ("Will X win...") или `generic`
+- `variant` — тип линии: `moneyline`, `spread` или `total`
 
 #### 2. Быстрый отбор кандидатов (`build_candidate_index`, `_candidate_markets_for_poly`)
 
@@ -238,6 +244,7 @@ category, slug
 Для каждой пары кандидатов:
 
 **Быстрые фильтры (early rejection):**
+- `market_variant_mismatch` — нельзя матчить `spread`/`total` с `moneyline`
 - `market_shape_mismatch` — matchup нельзя матчить с proposition
 - `date_mismatch` — если оба рынка содержат даты и они не совпадают
 - `number_mismatch` — аналогично для чисел
@@ -372,29 +379,39 @@ pf_asks   = [(0.45, 400), (0.47, 200), ...]   # sorted by price ASC
 ### AlertManager
 
 **Файл:** `services/alert_manager.py`
-**Задача:** принять рассчитанную возможность, применить фильтры, дедуплицировать и создать алерт в БД.
+**Задача:** принять рассчитанную возможность, дедуплицировать её и сохранить `ArbOpportunity` в БД.
 
 **`process_opportunity(pair, calc_result, market_a, market_b, preferences)`:**
-
-1. **Глобальная фильтрация по preferences:**
-   - min_roi — если ROI ниже порога пользователя
-   - min_capital — если объём сделки ниже минимального порога
-   - max_capital — если объём сделки превышает порог
-   - min_profit — если ожидаемый профит ниже порога
-   - max_days_to_close — если рынок закрывается слишком нескоро (или дата неизвестна)
-
-2. **Smart deduplication (Redis):**
+1. **Smart deduplication (Redis):**
    - Ключ: `alert-dedupe:{pair_hash}:{direction}`
    - При наличии предыдущего алерта: пропускаем, если `profit_diff < $3` **и** `roi_diff < 0.5%`
    - Это позволяет отправить повторный алерт, только если возможность стала значительно лучше
 
-3. **Сохранение в БД:**
+2. **Сохранение в БД:**
    - Создаётся `ArbOpportunity` (расчёт сохраняется)
-   - Fanout идет через `Subscription` + `UserPreference`, а `TELEGRAM_DEFAULT_CHAT_IDS` используется только как legacy fallback
-   - Для подходящих Telegram-target'ов создаются `Alert` со статусом `"queued"`
-   - Обновляется dedupe-кэш в Redis
+   - `fanout_status` ставится в `"queued"`
+   - Сами строки `Alert` здесь не создаются: это делает отдельный `FanoutManager`
+   - После успешного commit обновляется dedupe-кэш в Redis
 
-4. **Rollback-safety:** если commit в БД упал, dedupe-ключ из Redis удаляется (иначе можно потерять алерт навсегда)
+3. **Rollback-safety:** если commit в БД упал, Redis-ключ не записывается, чтобы не потерять алерт навсегда
+
+---
+
+### FanoutManager
+
+**Файл:** `services/fanout_manager.py`
+**Задача:** взять `ArbOpportunity` со статусом `queued/retry`, подобрать получателей и создать строки `Alert`.
+
+**`process_pending_opportunities(limit=50)`:**
+1. Получает набор delivery-target'ов из `subscriptions + users + user_preferences`
+2. Берёт opportunity по одной через `FOR UPDATE SKIP LOCKED`
+3. Применяет пользовательские фильтры через `filter_reason_for_preferences(...)`
+4. Пропускает `muted`-чаты и создаёт по одному `Alert` на каждый подходящий `telegram_chat_id`
+5. Если пользовательских target'ов в БД нет, использует `TELEGRAM_DEFAULT_CHAT_IDS` как legacy fallback
+
+Target'ы кешируются в памяти на `FANOUT_TARGET_CACHE_TTL_SECONDS`, поэтому изменения mute/preferences применяются не мгновенно, а в пределах короткого TTL.
+
+В текущем pipeline worker также использует тот же fanout-сервис синхронно сразу после расчёта возможности, поэтому алерт обычно создаётся и отправляется сразу, а `fanout_worker` остаётся как fallback для queued/retry кейсов.
 
 ---
 
@@ -426,11 +443,15 @@ pf_asks   = [(0.45, 400), (0.47, 200), ...]   # sorted by price ASC
 Бесконечный цикл с интервалом `TELEGRAM_ALERTS_POLL_SECONDS` (0.5 сек):
 1. Выбирает до 20 алертов со статусом `"queued"` или `"retry"` через JOIN:
    `Alert → ArbOpportunity → MarketPair → Market (A) + Market (B)`
-2. Для каждого формирует HTML-сообщение и отправляет
+2. Перед отправкой заново подтягивает актуальные ордербуки и пересчитывает opportunity на текущих ценах
+3. Повторно проверяет пользовательские фильтры на свежих данных
+4. Только после этого формирует HTML-сообщение и отправляет
 3. **Retry-логика:**
-   - Первая ошибка → статус `"retry"` + ожидание 3 секунды + повтор
-   - Вторая ошибка → статус `"failed"`
+   - Ошибка → статус `"retry"` и `next_retry_at = now + TELEGRAM_DELIVERY_RETRY_SECONDS`
+   - После `TELEGRAM_DELIVERY_MAX_ATTEMPTS` попыток алерт переводится в `"failed"`
 4. При `ProgrammingError` (таблица не существует) — ждёт миграций
+
+Этот loop теперь в основном нужен как fallback-доставка для retry/backlog alert'ов. Основной happy-path отправляет сообщение сразу в worker-пайплайне.
 
 **Формат алерта:**
 ```
@@ -458,13 +479,9 @@ Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
 
 **Команды бота:**
 - `/start` — главное меню с кнопками Pause/Resume и Settings
-- `/settings` — просмотр и изменение фильтров
-- `/set roi 1.5` — минимальный ROI
-- `/set minvolume 50` — минимальный объем сделки в USD
-- `/set volume 500` — максимальный объем сделки в USD
-- `/set profit 10` — минимальный профит в USD
-- `/set expires 30` — максимум дней до закрытия рынка
-- для `minvolume`, `volume`, `profit`, `expires` поддерживается `off`
+- настройки меняются только через inline-кнопки в окне Settings
+- после нажатия на конкретную кнопку бот ждёт следующее текстовое сообщение как значение выбранного поля
+- для числовых фильтров поддерживается `off`, если это допустимо для конкретного поля
 
 **Inline-навигация (callback queries):**
 - `tg_nav:home` → главное меню
@@ -493,6 +510,8 @@ Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
     "muted": False,
 }
 ```
+
+Пользователь появляется в `telegram_chats / users / subscriptions / user_preferences` только после вызова `ensure_telegram_user()`. На практике это происходит в `/start` и в flows, где читаются или меняются настройки.
 
 **`filter_reason_for_preferences(opportunity, market_a, market_b, preferences)`:**
 Проверяет фильтры последовательно:
@@ -536,11 +555,12 @@ Link preview отключён через `LinkPreviewOptions(is_disabled=True)`.
 ### Шаг 3: Обработка кандидатов
 
 1. Загружаются все пары со статусом `auto_approved` или `approved`
-2. **Смарт-фильтрация API-запросов:** бот проверяет количество неудачных попыток чтения стакана. Если ранее стакан пары возвращался пустым `EMPTY_ORDERBOOK_THRESHOLD` раз подряд, она перманентно игнорируется для экономии лимитов бирж.
-3. Загружаются preferences пользователя
-4. `OrderbookService` параллельно (semaphore=4) загружает ордербуки
+2. **Смарт-фильтрация API-запросов:** бот проверяет количество неудачных попыток чтения стакана. Если ранее стакан пары возвращался пустым `EMPTY_ORDERBOOK_THRESHOLD` раз подряд, она временно пропускается до истечения TTL счётчика.
+3. `OrderbookService` параллельно загружает ордербуки
 4. `ArbitrageCalculator` считает opportunities для каждого направления
-5. `AlertManager` фильтрует, дедуплицирует и создаёт алерты
+5. `AlertManager` дедуплицирует и создаёт `ArbOpportunity`
+6. Сразу после этого worker подбирает delivery-target'ы, создаёт `Alert` и пытается отправить его немедленно
+7. Если немедленная отправка не удалась, alert остаётся в `queued/retry` и подбирается fallback sender'ом позже
 
 ---
 
@@ -588,6 +608,14 @@ curl -H "X-Admin-Token: $ADMIN_TOKEN" \
 5. Через веб-интерфейс можно открыть `http://127.0.0.1:8000/docs`, найти `GET /api/admin/runtime-metrics`, нажать `Try it out` и передать заголовок `X-Admin-Token`.
 
 ---
+Можно посмотреть chat id пользователей, зарегистрированных в базе:
+```bash
+docker exec arbitrage_db psql -U arb_user -d arbitrage_db -c "SELECT chat_id FROM telegram_chats;"
+```
+
+Если нужно увидеть именно тех, кто сейчас участвует в fanout, полезнее смотреть связку `telegram_chats + subscriptions + user_preferences`, потому что `muted = true` исключает чат из рассылки, хотя запись в базе остаётся.
+---
+
 
 ## ORM-модели
 
@@ -690,13 +718,16 @@ TELEGRAM_SYSTEM_ERROR_CHAT_IDS=123456789
 ADMIN_API_TOKEN=your_admin_token
 
 MARKET_REFRESH_SECONDS=60
-FEE_POLYMARKET_BPS=100.0
+FEE_POLYMARKET_BPS=180.0
 FEE_PREDICT_FUN_BPS=200.0
 ORDERBOOK_CACHE_TTL_SECONDS=2
-ORDERBOOK_CACHE_MAX_ITEMS=2048
-ORDERBOOK_POLYMARKET_BATCH_SIZE=200
-ORDERBOOK_PREDICT_FUN_CONCURRENCY=4
+ORDERBOOK_CACHE_MAX_ITEMS=5000
+ORDERBOOK_POLYMARKET_BATCH_SIZE=100
+ORDERBOOK_PREDICT_FUN_CONCURRENCY=8
 ALERTS_DEDUPE_TTL_SECONDS=600
+FANOUT_TARGET_CACHE_TTL_SECONDS=5
+TELEGRAM_ALERTS_POLL_SECONDS=0.5
+APP_RUNTIME_MODE=all
 ```
 
 ---
@@ -711,7 +742,7 @@ ALERTS_DEDUPE_TTL_SECONDS=600
 python3 run_tests.py
 ```
 
-Сейчас полный локальный прогон дает 130 тестов. Live-тесты по умолчанию пропускаются.
+Локальный прогон на текущем состоянии проекта запускается через `python3 run_tests.py` или через `python -m unittest discover -s tests -q`. Обычный `python -m unittest -q` здесь ничего не находит.
 
 Опции:
 - `-v` / `--verbose` — подробный вывод с именами тестов

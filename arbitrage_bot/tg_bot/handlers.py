@@ -1,4 +1,4 @@
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton
@@ -19,15 +19,6 @@ from arbitrage_bot.tg_bot.preferences import toggle_mute
 
 router = Router()
 
-_SETTINGS_FIELD_ALIASES = {
-    "roi": "min_roi_percent",
-    "minvolume": "min_capital_usd",
-    "volume": "max_capital_usd",
-    "profit": "min_profit_usd",
-    "expires": "max_days_to_close",
-}
-
-
 @router.message(Command("start"))
 async def cmd_start(message):
     async with AsyncSessionLocal() as session:
@@ -46,7 +37,7 @@ async def cmd_start(message):
 
 
 
-@router.callback_query(lambda callback: callback.data and callback.data.startswith("tg_nav:"))
+@router.callback_query(F.data.startswith("tg_nav:"))
 async def on_nav_callback(callback):
     action = callback.data.split(":", 1)[1]
 
@@ -96,7 +87,7 @@ async def on_nav_callback(callback):
     await _safe_answer_callback(callback)
 
 
-@router.callback_query(lambda callback: callback.data and callback.data.startswith("tg_edit:"))
+@router.callback_query(F.data.startswith("tg_edit:"))
 async def on_edit_callback(callback):
     field_name = callback.data.split(":", 1)[1]
 
@@ -126,10 +117,6 @@ async def on_plain_text_setting(message):
     if not text:
         return
 
-    lowered = text.lower()
-    if lowered.startswith("/"):
-        return
-
     async with AsyncSessionLocal() as session:
         ui_state = await get_ui_state(session, message.chat.id)
 
@@ -143,13 +130,6 @@ async def on_plain_text_setting(message):
 
         await _apply_setting_update(message, field_name, value)
         return
-
-    try:
-        field_name, value = _parse_set_command(f"/set {text}")
-    except ValueError:
-        return
-
-    await _apply_setting_update(message, field_name, value)
 
 
 async def _apply_setting_update(message, field_name, value):
@@ -263,32 +243,6 @@ def _build_prompt_keyboard():
             ]
         ]
     )
-
-
-def _parse_set_command(command_text):
-    parts = command_text.split(maxsplit=2)
-    if len(parts) != 3:
-        raise ValueError(
-            "Use one of these commands:\n"
-            "/set roi 1.5\n"
-            "/set minvolume 50\n"
-            "/set volume 500\n"
-            "/set profit 10\n"
-            "/set expires 30\n"
-            "/set minvolume off\n"
-            "/set volume off\n"
-            "/set profit off\n"
-            "/set expires off\n"
-            "/reset"
-        )
-
-    _, raw_key, raw_value = parts
-    field_name = _SETTINGS_FIELD_ALIASES.get(raw_key.lower())
-    if field_name is None:
-        raise ValueError("Unknown setting. Use: roi, minvolume, volume, profit, expires.")
-
-    value = _parse_setting_value(field_name, raw_value)
-    return field_name, value
 
 
 def _parse_setting_value(field_name, raw_value):
