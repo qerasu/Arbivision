@@ -94,16 +94,21 @@ class FanoutManager:
         return len(deliveries)
 
 
-    async def create_alert_deliveries(self, opportunity, market_a, market_b, delivery_targets=None):
+    async def create_alert_deliveries(self, opportunity, market_a, market_b, delivery_targets=None, skip_existing_lookup=False):
         return await self._create_alert_deliveries(
             opportunity,
             market_a,
             market_b,
             delivery_targets=delivery_targets,
+            skip_existing_lookup=skip_existing_lookup,
         )
 
 
-    async def _create_alert_deliveries(self, opportunity, market_a, market_b, delivery_targets=None):
+    async def get_delivery_targets(self):
+        return await self._get_delivery_targets()
+
+
+    async def _create_alert_deliveries(self, opportunity, market_a, market_b, delivery_targets=None, skip_existing_lookup=False):
         targets = delivery_targets if delivery_targets is not None else await self._get_delivery_targets()
         eligible_targets, drop_reasons = self._filter_targets(opportunity, targets, market_a, market_b)
         if not eligible_targets:
@@ -112,9 +117,11 @@ class FanoutManager:
                 incr_counter(f"fanout.drop.{drop_reason}")
             return []
 
-        existing_stmt = select(Alert.telegram_chat_id).where(Alert.opportunity_id == opportunity.id)
-        existing_result = await self.db.execute(existing_stmt)
-        existing_chat_ids = set(existing_result.scalars().all())
+        existing_chat_ids = set()
+        if not skip_existing_lookup:
+            existing_stmt = select(Alert.telegram_chat_id).where(Alert.opportunity_id == opportunity.id)
+            existing_result = await self.db.execute(existing_stmt)
+            existing_chat_ids = set(existing_result.scalars().all())
 
         deliveries = []
         for target in eligible_targets:
@@ -143,6 +150,7 @@ class FanoutManager:
                     )
                 existing_chat_ids.add(chat_id)
                 incr_counter("fanout.alert_created")
+                incr_counter("fanout.alerts_created")
             except IntegrityError:
                 existing_chat_ids.add(chat_id)
                 incr_counter("fanout.alert_duplicate")

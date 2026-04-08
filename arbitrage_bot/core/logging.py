@@ -17,6 +17,10 @@ class _SuppressTelegramPollingTimeoutFilter(logging.Filter):
         message = record.getMessage()
         if "Failed to fetch updates - TelegramNetworkError: HTTP Client says - Request timeout error" in message:
             return False
+        if "Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientOSError:" in message:
+            return False
+        if "record layer failure" in message.lower():
+            return False
         if message.startswith("Sleep for ") and "bot id =" in message:
             return False
         if message.startswith("Connection established (tryings ="):

@@ -20,11 +20,14 @@ from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.database import AsyncSessionLocal
 from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.core.observability import incr_counter
+from arbitrage_bot.core.redis import get_redis
 from arbitrage_bot.models.orm import Alert, ArbOpportunity, Market, MarketPair, UserPreference
 from arbitrage_bot.services.calculator import ArbitrageCalculator
 from arbitrage_bot.services.orderbook import OrderbookService
 from arbitrage_bot.services.system_notifier import format_error_details, send_system_error_notification
+from arbitrage_bot.services.system_notifier import is_transient_network_error
 from arbitrage_bot.tg_bot import handlers
+from arbitrage_bot.tg_bot.localization import translate
 from arbitrage_bot.tg_bot.preferences import default_preferences
 from arbitrage_bot.tg_bot.preferences import extract_pair_close_datetime
 from arbitrage_bot.tg_bot.preferences import filter_reason_for_preferences
@@ -32,6 +35,7 @@ from arbitrage_bot.tg_bot.preferences import filter_reason_for_preferences
 log = get_logger("tg_bot")
 _shared_dp = None
 _shared_delivery_bot = None
+_DELIVERY_DEDUPE_TTL_SECONDS = max(86400, int(settings.ALERTS_DEDUPE_TTL_SECONDS))
 
 
 def setup_bot():
@@ -72,7 +76,7 @@ async def _configure_bot_ui(bot):
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
-def _format_alert_message(opportunity, pair, market_a, market_b):
+def _format_alert_message(opportunity, pair, market_a, market_b, chat_id=None):
     direction = _describe_direction(opportunity.direction, pair)
     title = html.escape(market_a.title or market_b.title or "ARBITRAGE OPPORTUNITY")
     profit = _format_money(opportunity.net_profit)
@@ -81,21 +85,23 @@ def _format_alert_message(opportunity, pair, market_a, market_b):
     shares = _format_shares(opportunity.shares)
     leg_1_cost = _format_money(opportunity.avg_price_leg_1 * opportunity.shares)
     leg_2_cost = _format_money(opportunity.avg_price_leg_2 * opportunity.shares)
-    volumes_ratio = _format_volumes_ratio(opportunity.avg_price_leg_1, opportunity.avg_price_leg_2)
-    expires = _format_expiry_line(market_a, market_b)
+    leg_1_price = _format_leg_price_details(opportunity, 1, chat_id=chat_id)
+    leg_2_price = _format_leg_price_details(opportunity, 2, chat_id=chat_id)
+    volumes_ratio = _format_volumes_ratio(opportunity.avg_price_leg_1, opportunity.avg_price_leg_2, chat_id=chat_id)
+    expires = _format_expiry_line(market_a, market_b, chat_id=chat_id)
     links = _format_market_links(market_a, market_b)
 
     return (
         f"🚨 {title}\n\n"
-        f"💰 Profit: {profit}\n"
-        f"📈 Spread: {spread}\n"
-        f"💵 Volume: {capital}\n"
+        f"💰 {translate(chat_id, 'Profit', 'Прибыль')}: {profit}\n"
+        f"📈 {translate(chat_id, 'Spread', 'Спред')}: {spread}\n"
+        f"💵 {translate(chat_id, 'Volume', 'Объём')}: {capital}\n"
         f"{expires}\n\n"
-        f"🧾 Buy {shares} shares each:\n"
-        f"• {direction['leg_1_label']} on Polymarket @ {_format_price(opportunity.avg_price_leg_1)} = {leg_1_cost}\n"
-        f"• {direction['leg_2_label']} on Predict.Fun @ {_format_price(opportunity.avg_price_leg_2)} = {leg_2_cost}\n"
-        f"📊 Volumes ratio: {volumes_ratio}x\n\n"
-        f"🔗 Open markets:\n{links}"
+        f"🧾 {translate(chat_id, f'Buy {shares} shares each', f'Купить по {shares} shares')}:\n"
+        f"• {direction['leg_1_label']} {translate(chat_id, 'on', 'на')} Polymarket: {leg_1_price} = {leg_1_cost}\n"
+        f"• {direction['leg_2_label']} {translate(chat_id, 'on', 'на')} Predict.Fun: {leg_2_price} = {leg_2_cost}\n"
+        f"📊 {translate(chat_id, 'Volumes ratio', 'Соотношение объёмов')}: {volumes_ratio}x\n\n"
+        f"🔗 {translate(chat_id, 'Open markets', 'Открыть рынки')}:\n{links}"
     )
 
 
@@ -124,10 +130,10 @@ def _describe_direction(direction, pair=None):
     )
 
 
-def _format_expiry_line(market_a, market_b):
+def _format_expiry_line(market_a, market_b, chat_id=None):
     close_at = extract_pair_close_datetime(market_a, market_b)
     if close_at is None:
-        return "⏳ Ends in: Unknown"
+        return translate(chat_id, "⏳ Ends in: Unknown", "⏳ Окончание: неизвестно")
 
     if close_at.tzinfo is None:
         close_at = close_at.replace(tzinfo=timezone.utc)
@@ -138,7 +144,11 @@ def _format_expiry_line(market_a, market_b):
         math.ceil((close_at - now).total_seconds() / 86400),
     )
 
-    return f"⏳ Ends on: {close_at.date().isoformat()} (in {remaining_days} days)"
+    return translate(
+        chat_id,
+        f"⏳ Ends on: {close_at.date().isoformat()} (in {remaining_days} days)",
+        f"⏳ Завершится: {close_at.date().isoformat()} (через {remaining_days} дн.)",
+    )
 
 
 def _format_market_links(market_a, market_b):
@@ -163,7 +173,7 @@ def _build_market_url(market):
     for key in ("url", "marketUrl", "market_url", "shareUrl", "share_url"):
         value = raw_payload.get(key)
         if value:
-            return _append_referral_params(str(value), platform)
+            return _append_referral_params(_normalize_market_url(str(value), platform), platform)
 
     # slug is already a full url in some cases
     if slug.startswith("http://") or slug.startswith("https://"):
@@ -179,6 +189,26 @@ def _build_market_url(market):
             return _append_referral_params(f"https://predict.fun/market/{market.platform_market_id}", platform)
 
     return None
+
+
+def _normalize_market_url(value, platform):
+    url = str(value or "").strip()
+    if not url:
+        return None
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+
+    if not url.startswith("/"):
+        return url
+
+    if platform == "polymarket":
+        return f"https://polymarket.com{url}"
+
+    if platform == "predict_fun":
+        return f"https://predict.fun{url}"
+
+    return url
 
 
 def _append_referral_params(url, platform):
@@ -211,6 +241,25 @@ def _format_price(value):
     return f"${float(value):.3f}"
 
 
+def _format_leg_price_details(opportunity, leg_index, chat_id=None):
+    avg_price = float(getattr(opportunity, f"avg_price_leg_{leg_index}", 0.0) or 0.0)
+    calc_payload = getattr(opportunity, "calculation_json", None) or {}
+    best_price = calc_payload.get(f"best_price_leg_{leg_index}")
+
+    if best_price is None:
+        return translate(chat_id, f"avg fill {_format_price(avg_price)}", f"ср. цена {_format_price(avg_price)}")
+
+    best_price_value = float(best_price)
+    if abs(best_price_value - avg_price) < 0.0005:
+        return translate(chat_id, f"avg fill {_format_price(avg_price)}", f"ср. цена {_format_price(avg_price)}")
+
+    return translate(
+        chat_id,
+        f"avg fill {_format_price(avg_price)} (best ask {_format_price(best_price_value)})",
+        f"ср. цена {_format_price(avg_price)} (лучший ask {_format_price(best_price_value)})",
+    )
+
+
 def _format_shares(value):
     rounded = round(float(value), 2)
 
@@ -220,11 +269,11 @@ def _format_shares(value):
     return f"{rounded:.2f}"
 
 
-def _format_volumes_ratio(price_leg_1, price_leg_2):
+def _format_volumes_ratio(price_leg_1, price_leg_2, chat_id=None):
     p1 = float(price_leg_1)
     p2 = float(price_leg_2)
     if p1 <= 0 or p2 <= 0:
-        return "N/A"
+        return translate(chat_id, "N/A", "н/д")
 
     if p1 > p2:
         ratio = p1 / p2
@@ -248,18 +297,67 @@ def _is_missing_table_error(exc):
 
 
 async def _send_alert(bot, alert, opportunity, pair, market_a, market_b_row):
+    if await _is_duplicate_delivery(alert):
+        alert.status = "sent"
+        alert.next_retry_at = None
+        alert.sent_at = datetime.now(timezone.utc)
+        alert.error_message = "delivery deduped after restart"
+        return
+
     await bot.send_message(
         chat_id=alert.telegram_chat_id,
-        text=_format_alert_message(opportunity, pair, market_a, market_b_row),
+        text=_format_alert_message(opportunity, pair, market_a, market_b_row, chat_id=alert.telegram_chat_id),
         parse_mode="HTML",
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
+    await _store_delivery_marker(alert)
     alert.status = "sent"
     alert.attempt_count = int(getattr(alert, "attempt_count", 0) or 0) + 1
     alert.next_retry_at = None
     alert.sent_at = datetime.now(timezone.utc)
     alert.error_message = None
     incr_counter("telegram.alert_sent")
+    incr_counter("telegram.alert_send_success")
+
+
+def _delivery_dedupe_key(alert):
+    message_hash = str(getattr(alert, "message_hash", "") or "")
+    chat_id = str(getattr(alert, "telegram_chat_id", "") or "")
+    return f"telegram-delivery:{chat_id}:{message_hash}"
+
+
+async def _is_duplicate_delivery(alert):
+    message_hash = str(getattr(alert, "message_hash", "") or "")
+    chat_id = str(getattr(alert, "telegram_chat_id", "") or "")
+    if not message_hash or not chat_id:
+        return False
+
+    try:
+        redis = await get_redis()
+        if redis is None:
+            return False
+        return bool(await redis.get(_delivery_dedupe_key(alert)))
+    except Exception:
+        return False
+
+
+async def _store_delivery_marker(alert):
+    message_hash = str(getattr(alert, "message_hash", "") or "")
+    chat_id = str(getattr(alert, "telegram_chat_id", "") or "")
+    if not message_hash or not chat_id:
+        return
+
+    try:
+        redis = await get_redis()
+        if redis is None:
+            return
+        await redis.set(
+            _delivery_dedupe_key(alert),
+            "1",
+            ex=_DELIVERY_DEDUPE_TTL_SECONDS,
+        )
+    except Exception:
+        pass
 
 
 def _clone_opportunity(opportunity):
@@ -359,11 +457,13 @@ def _mark_alert_retry(alert, exc, now):
         alert.status = "failed"
         alert.next_retry_at = None
         incr_counter("telegram.alert_failed")
+        incr_counter("telegram.alert_send_failed")
         return
 
     alert.status = "retry"
     alert.next_retry_at = now + timedelta(seconds=settings.TELEGRAM_DELIVERY_RETRY_SECONDS)
     incr_counter("telegram.alert_retry")
+    incr_counter("telegram.alert_send_failed")
 
 
 def _apply_calc_result_to_opportunity(opportunity, calc_result):
@@ -565,11 +665,14 @@ async def start_polling():
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.error("polling failed", error=format_error_details(exc))
-                try:
-                    await send_system_error_notification("telegram", "start polling", exc)
-                except Exception:
-                    pass
+                if is_transient_network_error(exc):
+                    log.warning("polling interrupted by network issue", error=format_error_details(exc))
+                else:
+                    log.error("polling failed", error=format_error_details(exc))
+                    try:
+                        await send_system_error_notification("telegram", "start polling", exc)
+                    except Exception:
+                        pass
             finally:
                 sender_task.cancel()
                 await asyncio.gather(sender_task, return_exceptions=True)

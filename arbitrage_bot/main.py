@@ -15,7 +15,7 @@ async def lifespan(_app):
     if settings.APP_RUNTIME_MODE in {"all", "worker"}:
         coroutines.append(run_worker_runtime())
 
-    if settings.APP_RUNTIME_MODE in {"all", "fanout"}:
+    if settings.APP_RUNTIME_MODE == "fanout":
         coroutines.append(run_fanout_runtime())
 
     if settings.APP_RUNTIME_MODE in {"all", "telegram"}:

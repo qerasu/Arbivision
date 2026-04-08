@@ -28,15 +28,22 @@ _SIGNATURE_CACHE_MAX_SIZE = 20000
 _pair_empty_counts = {}
 _market_signature_cache = {}
 _EMPTY_COUNT_TTL_SECONDS = max(settings.MARKET_REFRESH_SECONDS * 20, 3600)
+_initial_warmup_completed = False
 
 
 async def run_sync_loop():
+    global _initial_warmup_completed
     # infinite market update loop
     while True:
         try:
             incr_counter("worker.cycle_started")
             async with AsyncSessionLocal() as session:
-                await _run_cycle(session)
+                await _run_cycle(
+                    session,
+                    suppress_alerts=not _initial_warmup_completed,
+                )
+            if not _initial_warmup_completed:
+                _initial_warmup_completed = True
             incr_counter("worker.cycle_completed")
         except asyncio.CancelledError:
             raise
@@ -49,7 +56,7 @@ async def run_sync_loop():
         await asyncio.sleep(settings.MARKET_REFRESH_SECONDS)
 
 
-async def _run_cycle(db):
+async def _run_cycle(db, suppress_alerts=False):
     ingestion = IngestionService(db)
     matcher = MatcherService()
     orderbook_service = OrderbookService()
@@ -60,7 +67,14 @@ async def _run_cycle(db):
     try:
         await ingestion.sync_markets()
         await _upsert_market_pairs(db, matcher)
-        cycle_stats = await _process_candidates(db, orderbook_service, calculator, alert_manager, fanout_manager)
+        cycle_stats = await _process_candidates(
+            db,
+            orderbook_service,
+            calculator,
+            alert_manager,
+            fanout_manager,
+            suppress_alerts=suppress_alerts,
+        )
         log.info(
             "worker cycle summary",
             approved_pairs=cycle_stats["approved_pairs"],
@@ -68,6 +82,7 @@ async def _run_cycle(db):
             pairs_with_books=cycle_stats["pairs_with_books"],
             skipped_pairs=cycle_stats["skipped_pairs"],
             opportunities=cycle_stats["opportunities"],
+            warmup_cycle=suppress_alerts,
         )
     finally:
         await ingestion.close()
@@ -207,7 +222,7 @@ def _mark_stale_pairs(pairs):
     return changed
 
 
-async def _process_candidates(db, orderbook_service, calculator, alert_manager, fanout_manager):
+async def _process_candidates(db, orderbook_service, calculator, alert_manager, fanout_manager, suppress_alerts=False):
     pair_stmt = select(MarketPair).where(
         MarketPair.status.in_(["auto_approved", "approved"])
     )
@@ -222,6 +237,7 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
         }
 
     active_pairs = await _filter_skippable_pairs(pairs)
+    incr_counter("worker.active_pairs_loaded", len(active_pairs))
     if not active_pairs:
         return {
             "approved_pairs": len(pairs),
@@ -232,31 +248,77 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
         }
 
     market_map = await _load_market_map_for_pairs(db, active_pairs)
-    orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs(active_pairs, db)
-
-    pairs_with_data = {item["pair"].pair_hash for item in orderbooks_data}
-    await _update_empty_counts(active_pairs, pairs_with_data)
+    pairs_with_books_count = 0
     opportunity_count = 0
-    for item in orderbooks_data:
-        pair = item["pair"]
-        directions = item.get("directions")
+    delivery_targets = None
+    remaining_warmup_promotions = settings.WARMUP_PROMOTION_LIMIT_PER_CYCLE
+    if remaining_warmup_promotions <= 0:
+        remaining_warmup_promotions = None
+    if not suppress_alerts:
+        delivery_targets = await fanout_manager.get_delivery_targets()
+    for pair in active_pairs:
         market_a = market_map.get(pair.market_id_a)
         market_b = market_map.get(pair.market_id_b)
+        if market_a is None or market_b is None:
+            await _update_empty_counts([pair], set())
+            continue
+
+        orderbook_item = await orderbook_service.fetch_orderbook_for_pair(
+            pair,
+            market_a,
+            market_b,
+        )
+        await _update_empty_counts(
+            [pair],
+            {pair.pair_hash} if orderbook_item is not None else set(),
+        )
+        if orderbook_item is None:
+            continue
+
+        pairs_with_books_count += 1
+        incr_counter("worker.pairs_with_orderbooks")
+
+        directions = orderbook_item.get("directions")
         calc_results = calculator.calculate_opportunities(directions)
         if not calc_results:
             incr_counter("calculator.drop.no_profitable_directions")
             continue
+        incr_counter("worker.calc_positive_spread", len(calc_results))
 
         for calc_result in calc_results:
             try:
-                opportunity = await alert_manager.process_opportunity(pair, calc_result)
+                opportunity = await alert_manager.process_opportunity(
+                    pair,
+                    calc_result,
+                    suppress_alert=suppress_alerts,
+                    allow_suppressed_promotion=(
+                        remaining_warmup_promotions is None
+                        or remaining_warmup_promotions > 0
+                    ),
+                )
+                if not opportunity:
+                    continue
+                delivery_action = getattr(opportunity, "_delivery_action", None)
+                if delivery_action == "suppressed" or suppress_alerts:
+                    incr_counter("worker.opportunities_created")
+                    incr_counter("worker.opportunity_warmup_persisted")
+                    opportunity_count += 1
+                    continue
+                if delivery_action == "deferred":
+                    incr_counter("worker.opportunity_warmup_deferred")
+                    continue
+                incr_counter("worker.opportunities_created")
+                if delivery_action == "promoted" and remaining_warmup_promotions is not None:
+                    remaining_warmup_promotions = max(0, remaining_warmup_promotions - 1)
                 deliveries = await fanout_manager.create_alert_deliveries(
                     opportunity,
                     market_a,
                     market_b,
+                    delivery_targets=delivery_targets,
+                    skip_existing_lookup=True,
                 )
                 for delivery in deliveries:
-                    await send_alert_immediately(
+                    sent = await send_alert_immediately(
                         delivery["alert"],
                         opportunity,
                         pair,
@@ -266,6 +328,10 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
                         directions,
                         calculator,
                     )
+                    if sent:
+                        incr_counter("worker.immediate_send_success")
+                    else:
+                        incr_counter("worker.immediate_send_failed")
                 opportunity.fanout_status = "processed"
                 opportunity.fanout_processed_at = datetime.now(timezone.utc)
                 opportunity.fanout_error_message = None
@@ -288,8 +354,8 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
     return {
         "approved_pairs": len(pairs),
         "active_pairs": len(active_pairs),
-        "pairs_with_books": len(orderbooks_data),
-        "skipped_pairs": max(0, len(active_pairs) - len(orderbooks_data)),
+        "pairs_with_books": pairs_with_books_count,
+        "skipped_pairs": max(0, len(active_pairs) - pairs_with_books_count),
         "opportunities": opportunity_count,
     }
 

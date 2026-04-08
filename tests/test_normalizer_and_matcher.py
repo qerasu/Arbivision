@@ -348,6 +348,46 @@ class MatcherServiceTests(unittest.TestCase):
         self.assertEqual(decision["reason"]["reject_reason"], "number_mismatch")
 
 
+    def test_rejects_exact_threshold_vs_at_least_threshold(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will annual inflation increase by 2.8% in March?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will annual inflation be at least 2.8% in March?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "comparison_mismatch")
+
+
+    def test_rejects_exact_threshold_vs_unicode_gte_threshold(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Will annual inflation increase by 2.8% in March?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"question": "Will annual inflation increase by 2.8% in March?"},
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will annual inflation increase by ≥2.8% in March?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={"question": "Will annual inflation increase by ≥2.8% in March?"},
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "comparison_mismatch")
+
+
     def test_rejects_nvidia_third_largest_vs_largest(self):
         poly_market = SimpleNamespace(
             id=10,

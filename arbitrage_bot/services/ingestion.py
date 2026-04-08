@@ -1,17 +1,21 @@
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 
 from arbitrage_bot.adapters.polymarket import PolymarketAdapter
 from arbitrage_bot.adapters.predict_fun import PredictFunAdapter
+from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.models.orm import Market
 from arbitrage_bot.services.normalizer import NormalizerService
 from arbitrage_bot.services.system_notifier import format_compact_error, send_system_error_notification
+from arbitrage_bot.services.system_notifier import is_transient_network_error
 
 log = get_logger("ingestion")
+_source_last_sync_completed_at = {}
 
 
 class IngestionService:
@@ -206,22 +210,45 @@ class IngestionService:
 
 
     async def sync_markets(self):
+        source_jobs = []
+        now = time.monotonic()
+
+        if self._should_sync_source("polymarket", now):
+            source_jobs.append(
+                (
+                    "polymarket",
+                    self.polymarket.fetch_markets(),
+                    self._map_polymarket_market,
+                )
+            )
+
+        if self._should_sync_source("predict.fun", now):
+            source_jobs.append(
+                (
+                    "predict.fun",
+                    self.predict_fun.fetch_markets(),
+                    self._map_predict_fun_market,
+                )
+            )
+
+        if not source_jobs:
+            return False
+
         results = await asyncio.gather(
-            self.polymarket.fetch_markets(),
-            self.predict_fun.fetch_markets(),
+            *(job[1] for job in source_jobs),
             return_exceptions=True,
         )
 
-        await self._sync_source(
-            "polymarket",
-            results[0],
-            self._map_polymarket_market,
-        )
-        await self._sync_source(
-            "predict.fun",
-            results[1],
-            self._map_predict_fun_market,
-        )
+        for (source_name, _, mapper), result in zip(source_jobs, results):
+            synced = await self._sync_source(
+                source_name,
+                result,
+                mapper,
+            )
+            if synced:
+                _source_last_sync_completed_at[source_name] = time.monotonic()
+
+        return True
 
 
     def _format_source_error(self, source, operation, error):
@@ -231,6 +258,17 @@ class IngestionService:
     def _chunked(self, values, chunk_size):
         for index in range(0, len(values), chunk_size):
             yield values[index:index + chunk_size]
+
+
+    def _should_sync_source(self, source_name, now):
+        min_interval = max(
+            float(settings.MARKET_SYNC_INTERVAL_SECONDS),
+            float(settings.MARKET_REFRESH_SECONDS),
+        )
+        last_completed_at = _source_last_sync_completed_at.get(source_name)
+        if last_completed_at is None:
+            return True
+        return (now - last_completed_at) >= min_interval
 
 
     async def _sync_source(self, source_name, payload_or_exc, mapper):
@@ -248,13 +286,16 @@ class IngestionService:
                 {item["platform_market_id"] for item in mapped_items},
             )
             await self.db.commit()
+            return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
             if "connection is closed" not in str(e).lower() and "[errno 61]" not in str(e).lower():
                 log.warning("markets sync failed", source=source_name, error=self._format_source_error(source_name, "markets sync", e))
-                await send_system_error_notification(source_name, "markets sync", e)
+                if not is_transient_network_error(e):
+                    await send_system_error_notification(source_name, "markets sync", e)
             await self.db.rollback()
+            return False
 
 
     async def _upsert_markets(self, items):

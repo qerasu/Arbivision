@@ -333,24 +333,28 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         fake_db = FakeDb()
         orderbook_service = SimpleNamespace(
-            fetch_orderbooks_for_pairs=AsyncMock(
-                return_value=[
-                    {
-                        "pair": SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
-                        "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.7, 2)]}},
-                    }
-                ]
+            fetch_orderbook_for_pair=AsyncMock(
+                return_value={
+                    "pair": SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+                    "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.7, 2)]}},
+                }
             )
         )
         calculator = SimpleNamespace(calculate_opportunities=Mock(return_value=[]))
         alert_manager = SimpleNamespace(process_opportunity=AsyncMock())
-        fanout_manager = SimpleNamespace(create_alert_deliveries=AsyncMock(return_value=[]))
+        fanout_manager = SimpleNamespace(
+            create_alert_deliveries=AsyncMock(return_value=[]),
+            get_delivery_targets=AsyncMock(return_value=[]),
+        )
 
         with patch("arbitrage_bot.worker._filter_skippable_pairs", new=AsyncMock(return_value=[
             SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
         ])), patch(
             "arbitrage_bot.worker._load_market_map_for_pairs",
-            new=AsyncMock(return_value={}),
+            new=AsyncMock(return_value={
+                10: SimpleNamespace(id=10, platform="polymarket", platform_market_id="poly-10"),
+                20: SimpleNamespace(id=20, platform="predict_fun", platform_market_id="pf-20"),
+            }),
         ), patch(
             "arbitrage_bot.worker._update_empty_counts",
             new=AsyncMock(),
@@ -361,4 +365,219 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
             result = await _process_candidates(fake_db, orderbook_service, calculator, alert_manager, fanout_manager)
 
         self.assertEqual(result["opportunities"], 0)
-        self.assertEqual(snapshot_counters()["calculator.drop.no_profitable_directions"], 1)
+        counters = snapshot_counters()
+        self.assertEqual(counters["worker.active_pairs_loaded"], 1)
+        self.assertEqual(counters["worker.pairs_with_orderbooks"], 1)
+        self.assertEqual(counters["calculator.drop.no_profitable_directions"], 1)
+
+
+    async def test_process_candidates_persists_warmup_opportunity_without_fanout_or_send(self):
+        class FakeScalarResult:
+            def __init__(self, items):
+                self.items = items
+
+
+            def scalars(self):
+                return self
+
+
+            def all(self):
+                return list(self.items)
+
+
+        class FakeDb:
+            async def execute(self, stmt):
+                return FakeScalarResult([SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20)])
+
+
+        fake_db = FakeDb()
+        orderbook_service = SimpleNamespace(
+            fetch_orderbook_for_pair=AsyncMock(
+                return_value={
+                    "pair": SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+                    "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.5, 2)]}},
+                }
+            )
+        )
+        calculator = SimpleNamespace(
+            calculate_opportunities=Mock(
+                return_value=[
+                    {
+                        "direction": "A_yes_B_no",
+                        "avg_price_leg_1": 0.40,
+                        "avg_price_leg_2": 0.50,
+                        "shares": 10.0,
+                        "capital_required": 9.0,
+                        "gross_profit": 1.0,
+                        "net_profit": 2.0,
+                        "gross_roi": 0.11,
+                        "net_roi": 0.22,
+                    }
+                ]
+            )
+        )
+        alert_manager = SimpleNamespace(
+            process_opportunity=AsyncMock(return_value=SimpleNamespace(id=55, fanout_status="suppressed"))
+        )
+        fanout_manager = SimpleNamespace(
+            create_alert_deliveries=AsyncMock(return_value=[]),
+            get_delivery_targets=AsyncMock(return_value=[]),
+        )
+
+        with patch("arbitrage_bot.worker._filter_skippable_pairs", new=AsyncMock(return_value=[
+            SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+        ])), patch(
+            "arbitrage_bot.worker._load_market_map_for_pairs",
+            new=AsyncMock(return_value={
+                10: SimpleNamespace(id=10, platform="polymarket", platform_market_id="poly-10"),
+                20: SimpleNamespace(id=20, platform="predict_fun", platform_market_id="pf-20"),
+            }),
+        ), patch(
+            "arbitrage_bot.worker._update_empty_counts",
+            new=AsyncMock(),
+        ), patch(
+            "arbitrage_bot.worker.send_alert_immediately",
+            new=AsyncMock(),
+        ) as send_mock:
+            result = await _process_candidates(
+                fake_db,
+                orderbook_service,
+                calculator,
+                alert_manager,
+                fanout_manager,
+                suppress_alerts=True,
+            )
+
+        self.assertEqual(result["opportunities"], 1)
+        fanout_manager.get_delivery_targets.assert_not_awaited()
+        fanout_manager.create_alert_deliveries.assert_not_awaited()
+        send_mock.assert_not_awaited()
+        counters = snapshot_counters()
+        self.assertEqual(counters["worker.opportunity_warmup_persisted"], 1)
+
+
+    async def test_process_candidates_limits_warmup_promotions_but_keeps_fresh_opportunities(self):
+        class FakeScalarResult:
+            def __init__(self, items):
+                self.items = items
+
+
+            def scalars(self):
+                return self
+
+
+            def all(self):
+                return list(self.items)
+
+
+        class FakeDb:
+            def __init__(self):
+                self.commit_calls = 0
+                self.rollback_calls = 0
+
+
+            async def execute(self, stmt):
+                return FakeScalarResult(
+                    [
+                        SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+                        SimpleNamespace(id=2, pair_hash="pair-2", market_id_a=30, market_id_b=40),
+                        SimpleNamespace(id=3, pair_hash="pair-3", market_id_a=50, market_id_b=60),
+                    ]
+                )
+
+
+            async def commit(self):
+                self.commit_calls += 1
+
+
+            async def rollback(self):
+                self.rollback_calls += 1
+
+
+        fake_db = FakeDb()
+        orderbook_payload = {
+            "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.5, 2)]}},
+        }
+        orderbook_service = SimpleNamespace(
+            fetch_orderbook_for_pair=AsyncMock(
+                side_effect=[
+                    {"pair": SimpleNamespace(id=1), **orderbook_payload},
+                    {"pair": SimpleNamespace(id=2), **orderbook_payload},
+                    {"pair": SimpleNamespace(id=3), **orderbook_payload},
+                ]
+            )
+        )
+        calculator = SimpleNamespace(
+            calculate_opportunities=Mock(
+                return_value=[
+                    {
+                        "direction": "A_yes_B_no",
+                        "avg_price_leg_1": 0.40,
+                        "avg_price_leg_2": 0.50,
+                        "shares": 10.0,
+                        "capital_required": 9.0,
+                        "gross_profit": 1.0,
+                        "net_profit": 2.0,
+                        "gross_roi": 0.11,
+                        "net_roi": 0.22,
+                    }
+                ]
+            )
+        )
+
+        async def process_opportunity(pair, calc_result, suppress_alert=False, allow_suppressed_promotion=True):
+            if pair.id == 1:
+                return SimpleNamespace(id=101, fanout_status="queued", _delivery_action="promoted")
+            if pair.id == 2:
+                self.assertFalse(allow_suppressed_promotion)
+                return SimpleNamespace(id=102, fanout_status="suppressed", _delivery_action="deferred")
+            return SimpleNamespace(id=103, fanout_status="queued", _delivery_action="queued")
+
+
+        alert_manager = SimpleNamespace(
+            process_opportunity=AsyncMock(side_effect=process_opportunity)
+        )
+        fanout_manager = SimpleNamespace(
+            create_alert_deliveries=AsyncMock(return_value=[]),
+            get_delivery_targets=AsyncMock(return_value=[]),
+        )
+
+        with patch("arbitrage_bot.worker._filter_skippable_pairs", new=AsyncMock(return_value=[
+            SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+            SimpleNamespace(id=2, pair_hash="pair-2", market_id_a=30, market_id_b=40),
+            SimpleNamespace(id=3, pair_hash="pair-3", market_id_a=50, market_id_b=60),
+        ])), patch(
+            "arbitrage_bot.worker._load_market_map_for_pairs",
+            new=AsyncMock(return_value={
+                10: SimpleNamespace(id=10, platform="polymarket", platform_market_id="poly-10"),
+                20: SimpleNamespace(id=20, platform="predict_fun", platform_market_id="pf-20"),
+                30: SimpleNamespace(id=30, platform="polymarket", platform_market_id="poly-30"),
+                40: SimpleNamespace(id=40, platform="predict_fun", platform_market_id="pf-40"),
+                50: SimpleNamespace(id=50, platform="polymarket", platform_market_id="poly-50"),
+                60: SimpleNamespace(id=60, platform="predict_fun", platform_market_id="pf-60"),
+            }),
+        ), patch(
+            "arbitrage_bot.worker._update_empty_counts",
+            new=AsyncMock(),
+        ), patch(
+            "arbitrage_bot.worker.send_alert_immediately",
+            new=AsyncMock(),
+        ) as send_mock, patch(
+            "arbitrage_bot.worker.settings.WARMUP_PROMOTION_LIMIT_PER_CYCLE",
+            1,
+        ):
+            result = await _process_candidates(
+                fake_db,
+                orderbook_service,
+                calculator,
+                alert_manager,
+                fanout_manager,
+                suppress_alerts=False,
+            )
+
+        self.assertEqual(result["opportunities"], 2)
+        fanout_manager.get_delivery_targets.assert_awaited_once()
+        self.assertEqual(fanout_manager.create_alert_deliveries.await_count, 2)
+        send_mock.assert_not_awaited()
+        counters = snapshot_counters()
+        self.assertEqual(counters["worker.opportunity_warmup_deferred"], 1)

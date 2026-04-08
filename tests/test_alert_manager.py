@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from arbitrage_bot.models.orm import ArbOpportunity
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.models.orm import Market
 from arbitrage_bot.models.orm import SettingsRecord as OrmSettings
@@ -35,6 +36,7 @@ class FakeDbSession:
         self.rollback_calls = 0
         self.fail_commit = False
         self.global_preferences = None
+        self.opportunities = []
 
 
     def add(self, item):
@@ -43,6 +45,8 @@ class FakeDbSession:
             item.id = len(self.added)
         if isinstance(item, OrmSettings):
             self.global_preferences = item
+        if isinstance(item, ArbOpportunity) and item not in self.opportunities:
+            self.opportunities.append(item)
 
 
     async def flush(self):
@@ -65,6 +69,14 @@ class FakeDbSession:
             return FakeScalarResult(
                 [self.global_preferences] if self.global_preferences is not None else []
             )
+        if "FROM arb_opportunities" in compiled:
+            suppressed = [
+                opportunity
+                for opportunity in self.opportunities
+                if getattr(opportunity, "fanout_status", None) == "suppressed"
+            ]
+            suppressed.sort(key=lambda opportunity: opportunity.id, reverse=True)
+            return FakeScalarResult(suppressed[:1])
         raise AssertionError(f"unexpected stmt: {compiled}")
 
 
@@ -175,6 +187,106 @@ class AlertManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result)
         self.assertEqual(db.commit_calls, 0)
+        self.assertEqual(redis.setex_calls, [])
+
+
+    async def test_suppress_alert_persists_suppressed_opportunity_without_touching_dedupe(self):
+        db = FakeDbSession()
+        redis = FakeRedis()
+        manager = AlertManager(db)
+        pair = SimpleNamespace(id=7, pair_hash="pair-123", market_id_a=101, market_id_b=202)
+        calc_result = {
+            "direction": "A_yes_B_no",
+            "avg_price_leg_1": 0.40,
+            "avg_price_leg_2": 0.50,
+            "shares": 10.0,
+            "capital_required": 9.0,
+            "gross_profit": 1.0,
+            "net_profit": 7.5,
+            "gross_roi": 0.11,
+            "net_roi": 0.12,
+        }
+
+        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+            result = await manager.process_opportunity(
+                pair,
+                calc_result,
+                suppress_alert=True,
+            )
+
+        self.assertEqual(result.fanout_status, "suppressed")
+        self.assertEqual(result.market_pair_id, pair.id)
+        self.assertEqual(db.flush_calls, 1)
+        self.assertEqual(db.commit_calls, 1)
+        self.assertEqual(redis.setex_calls, [])
+
+
+    async def test_regular_cycle_promotes_existing_suppressed_opportunity_instead_of_creating_duplicate(self):
+        db = FakeDbSession()
+        redis = FakeRedis()
+        manager = AlertManager(db)
+        pair = SimpleNamespace(id=7, pair_hash="pair-123", market_id_a=101, market_id_b=202)
+        calc_result = {
+            "direction": "A_yes_B_no",
+            "avg_price_leg_1": 0.40,
+            "avg_price_leg_2": 0.50,
+            "shares": 10.0,
+            "capital_required": 9.0,
+            "gross_profit": 1.0,
+            "net_profit": 7.5,
+            "gross_roi": 0.11,
+            "net_roi": 0.12,
+        }
+
+        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+            suppressed = await manager.process_opportunity(
+                pair,
+                calc_result,
+                suppress_alert=True,
+            )
+            queued = await manager.process_opportunity(pair, calc_result)
+
+        self.assertIs(queued, suppressed)
+        self.assertEqual(queued.fanout_status, "queued")
+        self.assertEqual(len(db.opportunities), 1)
+        self.assertEqual(db.commit_calls, 2)
+        self.assertEqual(len(redis.setex_calls), 1)
+
+
+    async def test_regular_cycle_can_defer_existing_suppressed_opportunity_without_sending(self):
+        db = FakeDbSession()
+        redis = FakeRedis()
+        manager = AlertManager(db)
+        pair = SimpleNamespace(id=7, pair_hash="pair-123", market_id_a=101, market_id_b=202)
+        calc_result = {
+            "direction": "A_yes_B_no",
+            "avg_price_leg_1": 0.40,
+            "avg_price_leg_2": 0.50,
+            "shares": 10.0,
+            "capital_required": 9.0,
+            "gross_profit": 1.0,
+            "net_profit": 7.5,
+            "gross_roi": 0.11,
+            "net_roi": 0.12,
+        }
+
+        with patch("arbitrage_bot.services.alert_manager.get_redis", return_value=redis):
+            suppressed = await manager.process_opportunity(
+                pair,
+                calc_result,
+                suppress_alert=True,
+            )
+            deferred = await manager.process_opportunity(
+                pair,
+                calc_result,
+                allow_suppressed_promotion=False,
+            )
+
+        self.assertIs(deferred, suppressed)
+        self.assertEqual(deferred.fanout_status, "suppressed")
+        self.assertEqual(getattr(deferred, "_delivery_action", None), "deferred")
+        self.assertEqual(len(db.opportunities), 1)
+        self.assertEqual(db.commit_calls, 2)
         self.assertEqual(redis.setex_calls, [])
 
 

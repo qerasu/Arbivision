@@ -164,7 +164,9 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(db.added), 1)
         self.assertIsInstance(db.added[0], Alert)
         self.assertEqual(db.added[0].telegram_chat_id, "1001")
-        self.assertNotIn("fanout.drop.min_roi", snapshot_counters())
+        counters = snapshot_counters()
+        self.assertEqual(counters["fanout.alerts_created"], 1)
+        self.assertNotIn("fanout.drop.min_roi", counters)
 
 
     async def test_fanout_counts_muted_target_drop_reason(self):
@@ -434,6 +436,64 @@ class FanoutManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(processed_count, 2)
         self.assertEqual(targets_mock.await_count, 1)
+
+
+    async def test_create_alert_deliveries_skips_existing_lookup_for_fresh_opportunity(self):
+        db = FakeDbSession()
+        db.execute = AsyncMock(side_effect=AssertionError("unexpected existing alert lookup"))
+        manager = FanoutManager(db)
+        opportunity = SimpleNamespace(
+            id=7,
+            net_roi=0.12,
+            capital_required=10.0,
+            net_profit=5.0,
+        )
+        market_a = Market(
+            id=101,
+            platform="polymarket",
+            platform_market_id="poly-101",
+            status="active",
+            tradable=True,
+            title="market a",
+            normalized_title="market a",
+            description="",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="",
+            slug="",
+        )
+        market_b = Market(
+            id=202,
+            platform="predict_fun",
+            platform_market_id="pf-202",
+            status="active",
+            tradable=True,
+            title="market b",
+            normalized_title="market b",
+            description="",
+            outcomes_json=[],
+            raw_payload_json={},
+            category="",
+            slug="",
+        )
+
+        deliveries = await manager.create_alert_deliveries(
+            opportunity,
+            market_a,
+            market_b,
+            delivery_targets=[
+                {
+                    "user_id": 11,
+                    "subscription_id": 21,
+                    "telegram_chat_id": "1001",
+                    "preferences": {},
+                }
+            ],
+            skip_existing_lookup=True,
+        )
+
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(db.flush_calls, 1)
 
 
 class TelegramDeliveryRetryTests(unittest.TestCase):

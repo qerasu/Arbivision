@@ -13,6 +13,21 @@ _MAX_DEDUPE_ENTRIES = 500
 _MAX_ERROR_DETAILS_LENGTH = 280
 _shared_bot = None
 log = get_logger("system_notifier")
+_TRANSIENT_NETWORK_MARKERS = (
+    "record layer failure",
+    "request timeout error",
+    "timed out",
+    "timeout",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "nodename nor servname provided",
+    "connection reset by peer",
+    "server disconnected",
+    "clientoserror",
+    "connecterror",
+    "readtimeout",
+    "connecttimeout",
+)
 
 
 def _get_system_error_chat_ids():
@@ -65,6 +80,11 @@ def format_error_details(error):
 
 def format_compact_error(error):
     return f"{type(error).__name__}: {format_error_details(error)}"
+
+
+def is_transient_network_error(error):
+    details = format_error_details(error).lower()
+    return any(marker in details for marker in _TRANSIENT_NETWORK_MARKERS)
 
 
 def _extract_error_details(error):

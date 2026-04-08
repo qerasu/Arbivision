@@ -8,11 +8,12 @@ from arbitrage_bot.models.orm import Subscription
 from arbitrage_bot.models.orm import TelegramChat
 from arbitrage_bot.models.orm import User
 from arbitrage_bot.models.orm import UserPreference
+from arbitrage_bot.tg_bot.localization import translate
 
 GLOBAL_SETTINGS_KEY = "tg_alert_prefs:global"
 UI_STATE_KEY_PREFIX = "tg_ui_state:"
 DEFAULT_PREFERENCES = {
-    "min_roi_percent": 1,
+    "min_roi_percent": 5,
     "min_capital_usd": 10,
     "max_capital_usd": 150,
     "min_profit_usd": None,
@@ -316,80 +317,89 @@ async def _save_global_preferences(db_session, preferences):
     return preferences
 
 
-def format_preferences_text(preferences):
-    min_roi_str = _format_roi_value(preferences)
+def format_preferences_text(preferences, chat_id=None):
+    min_roi_str = _format_roi_value(preferences, chat_id=chat_id)
     min_capital = preferences.get("min_capital_usd")
-    min_capital_str = "off" if min_capital is None else _format_money(min_capital, fallback='')
+    min_capital_str = translate(chat_id, "off", "выкл") if min_capital is None else _format_money(min_capital, fallback='')
     max_capital = preferences.get("max_capital_usd")
-    max_capital_str = "off" if max_capital is None else _format_money(max_capital, fallback='')
+    max_capital_str = translate(chat_id, "off", "выкл") if max_capital is None else _format_money(max_capital, fallback='')
     min_profit = preferences.get("min_profit_usd")
-    min_profit_str = "off" if min_profit is None else _format_money(min_profit, fallback='')
-    max_days = _format_days(preferences.get("max_days_to_close"))
+    min_profit_str = translate(chat_id, "off", "выкл") if min_profit is None else _format_money(min_profit, fallback='')
+    max_days = _format_days(preferences.get("max_days_to_close"), chat_id=chat_id)
     return (
-        "⚙️ Your alert settings\n\n"
-        f"📈 Min ROI\nCurrent: {min_roi_str}\n\n"
-        f"📦 Min volume\nCurrent: {min_capital_str}\n\n"
-        f"💵 Volume\nCurrent: {max_capital_str}\n\n"
-        f"💰 Min profit\nCurrent: {min_profit_str}\n\n"
-        f"⏳ Max market end\nCurrent: {max_days}"
+        f"{translate(chat_id, '⚙️ Your alert settings', '⚙️ Ваши настройки алертов')}\n\n"
+        f"📈 {translate(chat_id, 'Min ROI', 'Мин. ROI')}\n"
+        f"{translate(chat_id, 'Current', 'Сейчас')}: {min_roi_str}\n\n"
+        f"📦 {translate(chat_id, 'Min volume', 'Мин. объём')}\n"
+        f"{translate(chat_id, 'Current', 'Сейчас')}: {min_capital_str}\n\n"
+        f"💵 {translate(chat_id, 'Volume', 'Макс. объём')}\n"
+        f"{translate(chat_id, 'Current', 'Сейчас')}: {max_capital_str}\n\n"
+        f"💰 {translate(chat_id, 'Min profit', 'Мин. прибыль')}\n"
+        f"{translate(chat_id, 'Current', 'Сейчас')}: {min_profit_str}\n\n"
+        f"⏳ {translate(chat_id, 'Max market end', 'Макс. срок рынка')}\n"
+        f"{translate(chat_id, 'Current', 'Сейчас')}: {max_days}"
     )
 
 
-def format_home_text(preferences):
+def format_home_text(preferences, chat_id=None):
     min_capital = preferences.get("min_capital_usd")
-    min_capital_str = "off" if min_capital is None else _format_money(min_capital, fallback='')
+    min_capital_str = translate(chat_id, "off", "выкл") if min_capital is None else _format_money(min_capital, fallback='')
     max_capital = preferences.get("max_capital_usd")
-    max_capital_str = "off" if max_capital is None else _format_money(max_capital, fallback='')
+    max_capital_str = translate(chat_id, "off", "выкл") if max_capital is None else _format_money(max_capital, fallback='')
     min_profit = preferences.get("min_profit_usd")
-    min_profit_str = "off" if min_profit is None else _format_money(min_profit, fallback='')
+    min_profit_str = translate(chat_id, "off", "выкл") if min_profit is None else _format_money(min_profit, fallback='')
     muted = preferences.get("muted", False)
     status_icon = "🔴" if muted else "🟢"
-    status_label = "Paused" if muted else "Active"
+    status_label = translate(chat_id, "Paused", "На паузе") if muted else translate(chat_id, "Active", "Активен")
     return (
-        "🔎 Arbitrage Scanner\n\n"
-        "Monitors Polymarket and Predict.Fun for spread inefficiencies.\n\n"
-        f"{status_icon} Status: {status_label}\n"
-        "Filters are applied to your personal alert stream.\n\n"
-        "Your filters:\n"
-        f"• 📈 Min ROI: {_format_roi_value(preferences)}\n"
-        f"• 📦 Min volume: {min_capital_str}\n"
-        f"• 💵 Max volume: {max_capital_str}\n"
-        f"• 💰 Min profit: {min_profit_str}\n"
-        f"• ⏳ Max market end: {_format_days(preferences.get('max_days_to_close'))}"
+        f"{translate(chat_id, '🔎 Arbitrage Scanner', '🔎 Сканер арбитража')}\n\n"
+        f"{translate(chat_id, 'Monitors Polymarket and Predict.Fun for spread inefficiencies.', 'Следит за Polymarket и Predict.Fun и ищет неэффективности спреда.')}\n\n"
+        f"{status_icon} {translate(chat_id, 'Status', 'Статус')}: {status_label}\n"
+        f"{translate(chat_id, 'Filters are applied to your personal alert stream.', 'Фильтры применяются только к вашему потоку алертов.')}\n\n"
+        f"{translate(chat_id, 'Your filters', 'Ваши фильтры')}:\n"
+        f"• 📈 {translate(chat_id, 'Min ROI', 'Мин. ROI')}: {_format_roi_value(preferences, chat_id=chat_id)}\n"
+        f"• 📦 {translate(chat_id, 'Min volume', 'Мин. объём')}: {min_capital_str}\n"
+        f"• 💵 {translate(chat_id, 'Max volume', 'Макс. объём')}: {max_capital_str}\n"
+        f"• 💰 {translate(chat_id, 'Min profit', 'Мин. прибыль')}: {min_profit_str}\n"
+        f"• ⏳ {translate(chat_id, 'Max market end', 'Макс. срок рынка')}: {_format_days(preferences.get('max_days_to_close'), chat_id=chat_id)}"
     )
 
 
-def format_status_text(preferences):
+def format_status_text(preferences, chat_id=None):
     muted = preferences.get("muted", False)
     status_icon = "🔴" if muted else "🟢"
-    status_label = "Paused" if muted else "Active"
-    alerts_line = "📭 Telegram alerts are paused." if muted else "📬 Telegram alerts are enabled."
+    status_label = translate(chat_id, "Paused", "На паузе") if muted else translate(chat_id, "Active", "Активен")
+    alerts_line = (
+        translate(chat_id, "📭 Telegram alerts are paused.", "📭 Telegram-алерты поставлены на паузу.")
+        if muted
+        else translate(chat_id, "📬 Telegram alerts are enabled.", "📬 Telegram-алерты включены.")
+    )
     return (
-        "📡 Arbitrage Scanner\n\n"
-        "Current bot status.\n\n"
-        f"{status_icon} Status: {status_label}\n"
-        "🔄 Monitoring is running in the background.\n"
+        f"{translate(chat_id, '📡 Arbitrage Scanner', '📡 Сканер арбитража')}\n\n"
+        f"{translate(chat_id, 'Current bot status.', 'Текущий статус бота.')}\n\n"
+        f"{status_icon} {translate(chat_id, 'Status', 'Статус')}: {status_label}\n"
+        f"{translate(chat_id, '🔄 Monitoring is running in the background.', '🔄 Мониторинг работает в фоне.')}\n"
         f"{alerts_line}"
     )
 
 
-def format_setting_prompt(field_name, preferences):
-    label = FIELD_LABELS[field_name]
-    current_value = _format_field_value(field_name, preferences)
+def format_setting_prompt(field_name, preferences, chat_id=None):
+    label = _field_label(field_name, chat_id=chat_id)
+    current_value = _format_field_value(field_name, preferences, chat_id=chat_id)
     description = {
-        "min_roi_percent": "Enter the minimum ROI percentage required to receive a signal.",
-        "min_capital_usd": "Enter the minimum volume in USD required for an alert.",
-        "max_capital_usd": "Enter the maximum volume in USD allowed for an alert.",
-        "min_profit_usd": "Enter the minimum profit in USD required for an alert.",
-        "max_days_to_close": "Enter the maximum number of days until market expiry.",
+        "min_roi_percent": translate(chat_id, "Enter the minimum ROI percentage required to receive a signal.", "Введите минимальный ROI в процентах для получения сигнала."),
+        "min_capital_usd": translate(chat_id, "Enter the minimum volume in USD required for an alert.", "Введите минимальный объём в USD для получения алерта."),
+        "max_capital_usd": translate(chat_id, "Enter the maximum volume in USD allowed for an alert.", "Введите максимальный объём в USD для получения алерта."),
+        "min_profit_usd": translate(chat_id, "Enter the minimum profit in USD required for an alert.", "Введите минимальную прибыль в USD для получения алерта."),
+        "max_days_to_close": translate(chat_id, "Enter the maximum number of days until market expiry.", "Введите максимальное количество дней до окончания рынка."),
     }[field_name]
 
     return (
-        "⚙️ Arbitrage Scanner\n\n"
-        f"✏️ Change: {label}\n"
-        f"→ current value: {current_value}\n\n"
+        f"{translate(chat_id, '⚙️ Arbitrage Scanner', '⚙️ Сканер арбитража')}\n\n"
+        f"✏️ {translate(chat_id, 'Change', 'Изменить')}: {label}\n"
+        f"→ {translate(chat_id, 'current value', 'текущее значение')}: {current_value}\n\n"
         f"{description}\n\n"
-        "Send `off` to disable this filter."
+        f"{translate(chat_id, 'Send `off` to disable this filter.', 'Отправьте `выкл`, чтобы отключить этот фильтр.')}"
     )
 
 
@@ -439,13 +449,13 @@ def effective_min_roi(preferences):
     return float(min_roi)
 
 
-def _format_field_value(field_name, preferences):
+def _format_field_value(field_name, preferences, chat_id=None):
     if field_name == "min_roi_percent":
-        return _format_roi_value(preferences)
+        return _format_roi_value(preferences, chat_id=chat_id)
     if field_name in {"min_capital_usd", "max_capital_usd", "min_profit_usd"}:
         val = preferences.get(field_name)
-        return "off" if val is None else _format_money(val, fallback='')
-    return _format_days(preferences.get(field_name))
+        return translate(chat_id, "off", "выкл") if val is None else _format_money(val, fallback='')
+    return _format_days(preferences.get(field_name), chat_id=chat_id)
 
 
 def extract_pair_close_datetime(market_a, market_b):
@@ -509,17 +519,28 @@ def _format_percent(value, fallback):
     return f"{float(value):.2f}%"
 
 
-def _format_days(value):
+def _format_days(value, chat_id=None):
     if value is None:
-        return "off"
-    return f"{int(value)} days"
+        return translate(chat_id, "off", "выкл")
+    return translate(chat_id, f"{int(value)} days", f"{int(value)} дн.")
 
 
-def _format_roi_value(preferences):
+def _format_roi_value(preferences, chat_id=None):
     min_roi = effective_min_roi(preferences)
     if min_roi is None:
-        return "off"
+        return translate(chat_id, "off", "выкл")
     return f"{float(min_roi):.2f}%"
+
+
+def _field_label(field_name, chat_id=None):
+    ru_labels = {
+        "min_roi_percent": "Мин. ROI",
+        "min_capital_usd": "Мин. объём",
+        "max_capital_usd": "Макс. объём",
+        "min_profit_usd": "Мин. прибыль",
+        "max_days_to_close": "Макс. срок рынка",
+    }
+    return translate(chat_id, FIELD_LABELS[field_name], ru_labels[field_name])
 
 
 def _ui_state_key(chat_id):

@@ -11,6 +11,9 @@ class PredictFunAdapter(BaseAdapter):
     page_limit = 100
     max_pages = 200
     recent_start_id = None
+    curl_max_attempts = 3
+    curl_max_time_seconds = 20
+    curl_connect_timeout_seconds = 5
     fallback_errors = (
         httpx.ConnectError,
         httpx.ConnectTimeout,
@@ -91,18 +94,13 @@ class PredictFunAdapter(BaseAdapter):
 
             url = f"{url}?{urlencode(params, doseq=True)}"
 
-        cmd = [
-            "curl",
-            "--config",
-            "-",
-        ]
-
         config_lines = [
             "silent",
             "show-error",
             "fail",
             "location",
-            "max-time = 10",
+            f"connect-timeout = {self.curl_connect_timeout_seconds}",
+            f"max-time = {self.curl_max_time_seconds}",
         ]
         for key, value in self.headers.items():
             escaped_value = str(value).replace("\\", "\\\\").replace('"', '\\"')
@@ -110,19 +108,26 @@ class PredictFunAdapter(BaseAdapter):
         config_lines.append(f'url = "{url}"')
         config_payload = "\n".join(config_lines).encode("utf-8")
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate(config_payload)
+        last_detail = None
+        for attempt in range(1, self.curl_max_attempts + 1):
+            proc = await asyncio.create_subprocess_exec(
+                "curl",
+                "--config",
+                "-",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate(config_payload)
 
-        if proc.returncode != 0:
-            detail = stderr.decode().strip() or repr(original_exc)
-            raise RuntimeError(f"curl fallback failed for {url}: {detail}") from original_exc
+            if proc.returncode == 0:
+                return json.loads(stdout)
 
-        return json.loads(stdout)
+            last_detail = stderr.decode().strip() or repr(original_exc)
+            if attempt < self.curl_max_attempts:
+                await asyncio.sleep(0.75 * attempt)
+
+        raise RuntimeError(f"curl fallback failed for {url}: {last_detail}") from original_exc
 
 
     def _extract_items(self, payload):

@@ -87,6 +87,20 @@ class MatcherService:
                 "market_variant_mismatch",
             )
 
+        if poly_signature["comparison_type"] != pf_signature["comparison_type"]:
+            comparison_types = {
+                poly_signature["comparison_type"],
+                pf_signature["comparison_type"],
+            }
+            if "unknown" not in comparison_types:
+                return self._build_rejection(
+                    poly_market,
+                    pf_market,
+                    poly_signature,
+                    pf_signature,
+                    "comparison_mismatch",
+                )
+
         direct_condition_match = self._has_direct_condition_match(poly_market, pf_market)
         if direct_condition_match:
             outcome_mapping = self._build_outcome_mapping(
@@ -518,6 +532,103 @@ class MatcherService:
         return "moneyline"
 
 
+    def _detect_comparison_type(self, market):
+        raw_payload = getattr(market, "raw_payload_json", None) or {}
+        raw_parts = [
+            getattr(market, "title", "") or "",
+            getattr(market, "slug", "") or "",
+            raw_payload.get("title") or "",
+            raw_payload.get("groupItemTitle") or "",
+            raw_payload.get("question") or "",
+            raw_payload.get("description") or "",
+        ]
+        raw_haystack = " ".join(str(part) for part in raw_parts if part).lower()
+        haystack = self.normalizer.normalize_text(raw_haystack)
+
+        if not re.search(r"\d", raw_haystack):
+            return "unknown"
+
+        if any(symbol in raw_haystack for symbol in ("≥", ">=")):
+            return "gte"
+
+        if any(symbol in raw_haystack for symbol in ("≤", "<=")):
+            return "lte"
+
+        if ">" in raw_haystack:
+            return "gt"
+
+        if "<" in raw_haystack:
+            return "lt"
+
+        if any(
+            phrase in haystack
+            for phrase in (
+                "at least",
+                "or more",
+                "not less than",
+                "no less than",
+                "minimum",
+                "min ",
+            )
+        ):
+            return "gte"
+
+        if any(
+            phrase in haystack
+            for phrase in (
+                "at most",
+                "or less",
+                "not more than",
+                "no more than",
+                "maximum",
+                "max ",
+            )
+        ):
+            return "lte"
+
+        if any(
+            phrase in haystack
+            for phrase in (
+                "more than",
+                "greater than",
+                "higher than",
+                "above ",
+                "over ",
+                "exceed",
+                "exceeds",
+            )
+        ):
+            return "gt"
+
+        if any(
+            phrase in haystack
+            for phrase in (
+                "less than",
+                "lower than",
+                "below ",
+                "under ",
+                "fewer than",
+            )
+        ):
+            return "lt"
+
+        if any(
+            phrase in haystack
+            for phrase in (
+                "exactly",
+                "equal to",
+                "equals ",
+                "equal ",
+            )
+        ):
+            return "exact"
+
+        if re.search(r"\b(?:increase|decrease|rise|fall|inflation)\b.*\bby\s+\d", haystack):
+            return "exact"
+
+        return "unknown"
+
+
     def _participant_similarity(self, left, right):
         if not left["tokens"] or not right["tokens"]:
             return 0.0
@@ -819,6 +930,7 @@ class MatcherService:
             "participants": participants,
             "kind": self._detect_market_kind(market, participants),
             "variant": self._detect_market_variant(market),
+            "comparison_type": self._detect_comparison_type(market),
         }
 
 

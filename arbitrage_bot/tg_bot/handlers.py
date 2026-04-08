@@ -3,8 +3,18 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton
 from aiogram.types import InlineKeyboardMarkup
+from sqlalchemy import func
+from sqlalchemy.future import select
 
+from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.database import AsyncSessionLocal
+from arbitrage_bot.core.observability import snapshot_counters
+from arbitrage_bot.models.orm import Alert
+from arbitrage_bot.models.orm import Subscription
+from arbitrage_bot.models.orm import TelegramChat
+from arbitrage_bot.models.orm import User
+from arbitrage_bot.models.orm import UserPreference
+from arbitrage_bot.tg_bot.localization import translate
 from arbitrage_bot.tg_bot.preferences import clear_ui_state
 from arbitrage_bot.tg_bot.preferences import ensure_telegram_user
 from arbitrage_bot.tg_bot.preferences import format_home_text
@@ -31,8 +41,8 @@ async def cmd_start(message):
         await clear_ui_state(session, message.chat.id)
 
     await message.answer(
-        format_home_text(preferences),
-        reply_markup=_build_home_keyboard(preferences),
+        format_home_text(preferences, chat_id=message.chat.id),
+        reply_markup=_build_home_keyboard(preferences, chat_id=message.chat.id),
     )
 
 
@@ -47,41 +57,61 @@ async def on_nav_callback(callback):
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
-                format_home_text(preferences),
-                reply_markup=_build_home_keyboard(preferences),
+                format_home_text(preferences, chat_id=callback.message.chat.id),
+                reply_markup=_build_home_keyboard(preferences, chat_id=callback.message.chat.id),
             )
         elif action == "settings":
             preferences = await get_user_preferences(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
-                format_preferences_text(preferences),
-                reply_markup=_build_settings_keyboard(),
+                format_preferences_text(preferences, chat_id=callback.message.chat.id),
+                reply_markup=_build_settings_keyboard(chat_id=callback.message.chat.id),
             )
         elif action == "toggle_mute":
             preferences = await toggle_mute(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             muted = preferences.get("muted", False)
-            toast = "⏸ Alerts paused" if muted else "▶️ Alerts resumed"
+            toast = (
+                translate(callback.message.chat.id, "⏸ Alerts paused", "⏸ Алерты поставлены на паузу")
+                if muted
+                else translate(callback.message.chat.id, "▶️ Alerts resumed", "▶️ Алерты снова включены")
+            )
             await _safe_edit_text(
                 callback,
-                format_home_text(preferences),
-                reply_markup=_build_home_keyboard(preferences),
+                format_home_text(preferences, chat_id=callback.message.chat.id),
+                reply_markup=_build_home_keyboard(preferences, chat_id=callback.message.chat.id),
             )
             try:
                 await callback.answer(toast, show_alert=False)
                 return
             except TelegramBadRequest:
                 pass
+        elif action == "stats":
+            if not _is_admin_chat(callback.message.chat.id):
+                await _safe_answer_callback(callback)
+                return
+            stats = await _load_admin_stats(session)
+            await clear_ui_state(session, callback.message.chat.id)
+            await _safe_edit_text(
+                callback,
+                _format_admin_stats_text(stats),
+                reply_markup=_build_stats_keyboard(),
+            )
         elif action == "reset":
             preferences = await reset_user_preferences(session, callback.message.chat.id)
             await clear_ui_state(session, callback.message.chat.id)
             await _safe_edit_text(
                 callback,
-                "Your settings were reset.\n\n"
-                "All Telegram filters are disabled for your chat, so you will receive every alert that passes system checks.\n\n"
-                f"{format_preferences_text(preferences)}",
-                reply_markup=_build_settings_keyboard(),
+                translate(
+                    callback.message.chat.id,
+                    "Your settings were reset.\n\n"
+                    "All Telegram filters are disabled for your chat, so you will receive every alert that passes system checks.\n\n",
+                    "Ваши настройки сброшены.\n\n"
+                    "Все Telegram-фильтры для этого чата отключены, поэтому вы будете получать все алерты, которые проходят системные проверки.\n\n",
+                ) +
+                f"{format_preferences_text(preferences, chat_id=callback.message.chat.id)}",
+                reply_markup=_build_settings_keyboard(chat_id=callback.message.chat.id),
             )
 
     await _safe_answer_callback(callback)
@@ -105,8 +135,8 @@ async def on_edit_callback(callback):
 
     await _safe_edit_text(
         callback,
-        format_setting_prompt(field_name, preferences),
-        reply_markup=_build_prompt_keyboard(),
+        format_setting_prompt(field_name, preferences, chat_id=callback.message.chat.id),
+        reply_markup=_build_prompt_keyboard(chat_id=callback.message.chat.id),
     )
     await _safe_answer_callback(callback)
 
@@ -114,22 +144,38 @@ async def on_edit_callback(callback):
 @router.message()
 async def on_plain_text_setting(message):
     text = (message.text or "").strip()
-    if not text:
+    if text == "/start":
         return
 
     async with AsyncSessionLocal() as session:
         ui_state = await get_ui_state(session, message.chat.id)
 
-    if ui_state and ui_state.get("mode") == "awaiting_value":
-        field_name = ui_state.get("field_name")
-        try:
-            value = _parse_setting_value(field_name, text)
-        except ValueError as exc:
-            await message.answer(str(exc))
+        if ui_state and ui_state.get("mode") == "awaiting_value":
+            if not text:
+                await message.answer(translate(message.chat.id, "Enter a number or `off`.", "Введите число или `выкл`."))
+                return
+
+            field_name = ui_state.get("field_name")
+            try:
+                value = _parse_setting_value(field_name, text, chat_id=message.chat.id)
+            except ValueError as exc:
+                await message.answer(str(exc))
+                return
+
+            await _apply_setting_update(message, field_name, value)
             return
 
-        await _apply_setting_update(message, field_name, value)
-        return
+        if not await _has_started_bot(session, message.chat.id):
+            await message.answer(_format_inactive_chat_text(chat_id=message.chat.id))
+            return
+
+        preferences = await get_user_preferences(session, message.chat.id)
+        await clear_ui_state(session, message.chat.id)
+
+    await message.answer(
+        _format_unhandled_message_text(preferences, chat_id=message.chat.id),
+        reply_markup=_build_home_keyboard(preferences, chat_id=message.chat.id),
+    )
 
 
 async def _apply_setting_update(message, field_name, value):
@@ -143,8 +189,10 @@ async def _apply_setting_update(message, field_name, value):
         prompt_message_id = ui_state.get("prompt_message_id")
 
     text = (
-        f"{_SETTINGS_SUCCESS_LABELS[field_name]} updated to {_format_success_value(field_name, value)}.\n\n"
-        f"{format_preferences_text(preferences)}"
+        f"{_settings_success_label(field_name, chat_id=message.chat.id)} "
+        f"{translate(message.chat.id, 'updated to', 'обновлён до')} "
+        f"{_format_success_value(field_name, value, chat_id=message.chat.id)}.\n\n"
+        f"{format_preferences_text(preferences, chat_id=message.chat.id)}"
     )
 
     if prompt_message_id is not None:
@@ -153,7 +201,7 @@ async def _apply_setting_update(message, field_name, value):
                 chat_id=message.chat.id,
                 message_id=prompt_message_id,
                 text=text,
-                reply_markup=_build_settings_keyboard(),
+                reply_markup=_build_settings_keyboard(chat_id=message.chat.id),
             )
             await _safe_delete_message(message)
             return
@@ -163,68 +211,82 @@ async def _apply_setting_update(message, field_name, value):
 
     await message.answer(
         text,
-        reply_markup=_build_settings_keyboard(),
+        reply_markup=_build_settings_keyboard(chat_id=message.chat.id),
     )
     await _safe_delete_message(message)
 
 
-def _build_home_keyboard(preferences=None):
+def _build_home_keyboard(preferences=None, chat_id=None):
     muted = (preferences or {}).get("muted", False)
-    toggle_text = "▶️ Resume" if muted else "⏸ Pause"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    toggle_text = (
+        translate(chat_id, "▶️ Resume", "▶️ Возобновить")
+        if muted
+        else translate(chat_id, "⏸ Pause", "⏸ Пауза")
+    )
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=toggle_text,
+                callback_data="tg_nav:toggle_mute",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=translate(chat_id, "Settings", "Настройки"),
+                callback_data="tg_nav:settings",
+            ),
+        ],
+    ]
+
+    if _is_admin_chat(chat_id):
+        rows.append(
             [
                 InlineKeyboardButton(
-                    text=toggle_text,
-                    callback_data="tg_nav:toggle_mute",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Settings",
-                    callback_data="tg_nav:settings",
+                    text="Stats",
+                    callback_data="tg_nav:stats",
                 ),
             ]
-        ]
-    )
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _build_settings_keyboard():
+def _build_settings_keyboard(chat_id=None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="→ Min ROI",
+                    text=f"→ {translate(chat_id, 'Min ROI', 'Мин. ROI')}",
                     callback_data="tg_edit:min_roi_percent",
                 ),
                 InlineKeyboardButton(
-                    text="→ Min volume",
+                    text=f"→ {translate(chat_id, 'Min volume', 'Мин. объём')}",
                     callback_data="tg_edit:min_capital_usd",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="→ Max volume",
+                    text=f"→ {translate(chat_id, 'Max volume', 'Макс. объём')}",
                     callback_data="tg_edit:max_capital_usd",
                 ),
                 InlineKeyboardButton(
-                    text="→ Min profit",
+                    text=f"→ {translate(chat_id, 'Min profit', 'Мин. прибыль')}",
                     callback_data="tg_edit:min_profit_usd",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="→ Max market end",
+                    text=f"→ {translate(chat_id, 'Max market end', 'Макс. срок рынка')}",
                     callback_data="tg_edit:max_days_to_close",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="Reset all",
+                    text=translate(chat_id, "Reset all", "Сбросить всё"),
                     callback_data="tg_nav:reset",
                 ),
                 InlineKeyboardButton(
-                    text="← Back",
+                    text=translate(chat_id, "← Back", "← Назад"),
                     callback_data="tg_nav:home",
                 ),
             ],
@@ -232,12 +294,12 @@ def _build_settings_keyboard():
     )
 
 
-def _build_prompt_keyboard():
+def _build_prompt_keyboard(chat_id=None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="← Back",
+                    text=translate(chat_id, "← Back", "← Назад"),
                     callback_data="tg_nav:settings",
                 ),
             ]
@@ -245,39 +307,56 @@ def _build_prompt_keyboard():
     )
 
 
-def _parse_setting_value(field_name, raw_value):
+def _build_stats_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Refresh",
+                    callback_data="tg_nav:stats",
+                ),
+                InlineKeyboardButton(
+                    text="← Back",
+                    callback_data="tg_nav:home",
+                ),
+            ]
+        ]
+    )
+
+
+def _parse_setting_value(field_name, raw_value, chat_id=None):
     value = raw_value.strip().lower()
-    if value == "off":
+    if value in {"off", "выкл"}:
         return None
 
     if field_name == "min_roi_percent":
         try:
             parsed = float(value)
         except (ValueError, TypeError):
-            raise ValueError("Enter a number, e.g. 1.5")
+            raise ValueError(translate(chat_id, "Enter a number, e.g. 1.5", "Введите число, например 1.5"))
         if parsed < 0:
-            raise ValueError("ROI must be zero or greater.")
+            raise ValueError(translate(chat_id, "ROI must be zero or greater.", "ROI должен быть не меньше нуля."))
         return parsed
 
     if field_name in {"min_capital_usd", "max_capital_usd", "min_profit_usd"}:
         try:
             parsed = float(value)
         except (ValueError, TypeError):
-            raise ValueError("Enter a number, e.g. 50")
+            raise ValueError(translate(chat_id, "Enter a number, e.g. 50", "Введите число, например 50"))
         if parsed <= 0:
-            raise ValueError("Value must be greater than zero.")
+            raise ValueError(translate(chat_id, "Value must be greater than zero.", "Значение должно быть больше нуля."))
         return parsed
 
     if field_name == "max_days_to_close":
         try:
             parsed = int(value)
         except (ValueError, TypeError):
-            raise ValueError("Enter a whole number, e.g. 30")
+            raise ValueError(translate(chat_id, "Enter a whole number, e.g. 30", "Введите целое число, например 30"))
         if parsed <= 0:
-            raise ValueError("Max market end must be greater than zero days.")
+            raise ValueError(translate(chat_id, "Max market end must be greater than zero days.", "Макс. срок рынка должен быть больше нуля дней."))
         return parsed
 
-    raise ValueError("Unsupported setting.")
+    raise ValueError(translate(chat_id, "Unsupported setting.", "Неподдерживаемая настройка."))
 
 
 async def _safe_edit_text(callback, text, reply_markup):
@@ -307,18 +386,9 @@ async def _safe_answer_callback(callback):
             raise
 
 
-_SETTINGS_SUCCESS_LABELS = {
-    "min_roi_percent": "Min ROI",
-    "min_capital_usd": "Min volume",
-    "max_capital_usd": "Max volume",
-    "min_profit_usd": "Min profit",
-    "max_days_to_close": "Max market end",
-}
-
-
-def _format_success_value(field_name, value):
+def _format_success_value(field_name, value, chat_id=None):
     if value is None:
-        return "off"
+        return translate(chat_id, "off", "выкл")
 
     if field_name == "min_roi_percent":
         return f"{float(value):.2f}%"
@@ -327,6 +397,160 @@ def _format_success_value(field_name, value):
         return f"${float(value):.0f}"
 
     if field_name == "max_days_to_close":
-        return f"{int(value)} days"
+        return translate(chat_id, f"{int(value)} days", f"{int(value)} дн.")
 
     return str(value)
+
+
+def _settings_success_label(field_name, chat_id=None):
+    ru_labels = {
+        "min_roi_percent": "Мин. ROI",
+        "min_capital_usd": "Мин. объём",
+        "max_capital_usd": "Макс. объём",
+        "min_profit_usd": "Мин. прибыль",
+        "max_days_to_close": "Макс. срок рынка",
+    }
+    return translate(chat_id, {
+        "min_roi_percent": "Min ROI",
+        "min_capital_usd": "Min volume",
+        "max_capital_usd": "Max volume",
+        "min_profit_usd": "Min profit",
+        "max_days_to_close": "Max market end",
+    }[field_name], ru_labels[field_name])
+
+
+def _is_admin_chat(chat_id):
+    if chat_id is None:
+        return False
+    return str(chat_id) in settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
+
+
+async def _has_started_bot(db_session, chat_id):
+    stmt = select(TelegramChat.id).where(TelegramChat.chat_id == str(chat_id))
+    result = await db_session.execute(stmt)
+    return result.first() is not None
+
+
+def _format_inactive_chat_text(chat_id=None):
+    return translate(chat_id, "Press /start to activate the bot and open the menu.", "Нажмите /start, чтобы активировать бота и открыть меню.")
+
+
+def _format_unhandled_message_text(preferences, chat_id=None):
+    return (
+        f"{translate(chat_id, 'Use the buttons below to control the bot.', 'Управляйте ботом через кнопки ниже.')}\n"
+        f"{translate(chat_id, 'To change filters, open Settings and enter a number only after selecting a field.', 'Чтобы изменить фильтры, откройте Настройки и вводите число только после выбора нужного поля.')}\n\n"
+        f"{format_home_text(preferences, chat_id=chat_id)}"
+    )
+
+
+async def _load_admin_stats(db_session):
+    users_stmt = (
+        select(
+            func.count(func.distinct(TelegramChat.chat_id)).label("total"),
+            func.count(func.distinct(TelegramChat.chat_id)).filter(UserPreference.muted.is_(True)).label("paused"),
+        )
+        .select_from(TelegramChat)
+        .join(User, TelegramChat.user_id == User.id)
+        .outerjoin(UserPreference, UserPreference.user_id == User.id)
+        .where(
+            User.status == "active",
+        )
+    )
+    alerts_stmt = select(
+        func.count(Alert.id).filter(Alert.status == "sent").label("sent"),
+        func.count(Alert.id).filter(Alert.status.in_(("cancelled", "failed"))).label("dropped"),
+    )
+    reasons_stmt = (
+        select(
+            Alert.error_message,
+            func.count(Alert.id).label("count"),
+        )
+        .where(
+            Alert.status.in_(("cancelled", "failed")),
+            Alert.error_message.is_not(None),
+        )
+        .group_by(Alert.error_message)
+        .order_by(func.count(Alert.id).desc(), Alert.error_message.asc())
+        .limit(8)
+    )
+
+    users_row = (await db_session.execute(users_stmt)).one()
+    alerts_row = (await db_session.execute(alerts_stmt)).one()
+    reason_rows = (await db_session.execute(reasons_stmt)).all()
+    runtime_metrics = snapshot_counters()
+
+    total_users = int(users_row.total or 0)
+    paused_users = int(users_row.paused or 0)
+    active_users = max(0, total_users - paused_users)
+
+    runtime_drop_reasons = {}
+    for key, value in sorted(runtime_metrics.items()):
+        if key.startswith("fanout.drop."):
+            runtime_drop_reasons[key.removeprefix("fanout.drop.")] = int(value)
+        elif key == "telegram.alert_cancelled_preferences":
+            runtime_drop_reasons["cancelled_preferences"] = int(value)
+        elif key == "telegram.alert_cancelled_revalidation":
+            runtime_drop_reasons["stale_after_revalidation"] = int(value)
+        elif key == "telegram.alert_send_failed":
+            runtime_drop_reasons["send_failed"] = int(value)
+
+    return {
+        "users": {
+            "total": total_users,
+            "active": active_users,
+            "paused": paused_users,
+        },
+        "alerts": {
+            "sent": int(alerts_row.sent or 0),
+            "dropped": int(alerts_row.dropped or 0),
+        },
+        "alert_drop_reasons": [
+            {
+                "reason": str(error_message),
+                "count": int(count),
+            }
+            for error_message, count in reason_rows
+        ],
+        "runtime_drop_reasons": runtime_drop_reasons,
+    }
+
+
+def _format_admin_stats_text(stats):
+    users = stats["users"]
+    alerts = stats["alerts"]
+    lines = [
+        "📊 Bot stats",
+        "",
+        "👥 Users:",
+        f"• 🧮 Total: {users['total']}",
+        f"• ✅ Active: {users['active']}",
+        f"• ⏸ Paused: {users['paused']}",
+        "",
+        "🚨 Alerts:",
+        f"• 📤 Sent: {alerts['sent']}",
+        f"• 🗑 Dropped: {alerts['dropped']}",
+    ]
+
+    alert_drop_reasons = stats.get("alert_drop_reasons") or []
+    if alert_drop_reasons:
+        lines.extend(
+            [
+                "",
+                "🧾 Drop reasons (all time):",
+            ]
+        )
+        for item in alert_drop_reasons:
+            lines.append(f"• {item['reason']}: {item['count']}")
+
+    runtime_drop_reasons = stats.get("runtime_drop_reasons") or {}
+    if runtime_drop_reasons:
+        lines.extend(
+            [
+                "",
+                "⚙️ Drop reasons (since restart):",
+            ]
+        )
+        for reason, count in runtime_drop_reasons.items():
+            lines.append(f"• {reason}: {count}")
+
+    return "\n".join(lines)

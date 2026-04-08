@@ -6,18 +6,25 @@ from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 from aiogram.exceptions import TelegramBadRequest
+from arbitrage_bot.core.config import settings
 from arbitrage_bot.models.orm import UserPreference
 from arbitrage_bot.services.calculator import ArbitrageCalculator
 from arbitrage_bot.tg_bot.bot import _apply_calc_result_to_opportunity
 from arbitrage_bot.tg_bot.bot import _build_bot_commands
+from arbitrage_bot.tg_bot.bot import _build_market_url
 from arbitrage_bot.tg_bot.bot import _format_alert_message
 from arbitrage_bot.tg_bot.bot import _is_missing_table_error
 from arbitrage_bot.tg_bot.bot import _revalidate_alert_opportunity
 from arbitrage_bot.tg_bot.bot import _should_skip_alert_for_current_preferences
+from arbitrage_bot.tg_bot.handlers import _format_inactive_chat_text
+from arbitrage_bot.tg_bot.handlers import _format_unhandled_message_text
 from arbitrage_bot.tg_bot.handlers import _build_home_keyboard
 from arbitrage_bot.tg_bot.handlers import _build_prompt_keyboard
 from arbitrage_bot.tg_bot.handlers import _build_settings_keyboard
 from arbitrage_bot.tg_bot.handlers import _apply_setting_update
+from arbitrage_bot.tg_bot.handlers import _format_admin_stats_text
+from arbitrage_bot.tg_bot.handlers import _load_admin_stats
+from arbitrage_bot.tg_bot.handlers import on_plain_text_setting
 from arbitrage_bot.tg_bot.handlers import _safe_answer_callback
 from arbitrage_bot.tg_bot.handlers import _safe_delete_message
 from arbitrage_bot.tg_bot.handlers import _safe_edit_text
@@ -31,6 +38,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
 
         self.assertEqual(keyboard.inline_keyboard[0][0].text, "⏸ Pause")
         self.assertEqual(keyboard.inline_keyboard[1][0].text, "Settings")
+        self.assertEqual(len(keyboard.inline_keyboard), 2)
 
 
     def test_build_settings_keyboard_contains_expected_actions(self):
@@ -47,6 +55,56 @@ class TelegramBotCommandsTests(unittest.TestCase):
         keyboard = _build_home_keyboard({"muted": True})
 
         self.assertEqual(keyboard.inline_keyboard[0][0].text, "▶️ Resume")
+
+
+    def test_build_home_keyboard_uses_russian_for_andrei_chat(self):
+        original_chat_id = settings.ANDREI_KURILOV_ID
+        settings.ANDREI_KURILOV_ID = "777"
+        try:
+            keyboard = _build_home_keyboard({"muted": False}, chat_id=777)
+        finally:
+            settings.ANDREI_KURILOV_ID = original_chat_id
+
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, "⏸ Пауза")
+        self.assertEqual(keyboard.inline_keyboard[1][0].text, "Настройки")
+
+
+    def test_build_home_keyboard_shows_stats_only_for_admin_chat(self):
+        original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
+        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = ["123"]
+        try:
+            keyboard = _build_home_keyboard(chat_id=123)
+        finally:
+            settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = original_system_error_chat_ids
+
+        self.assertEqual(keyboard.inline_keyboard[2][0].text, "Stats")
+
+
+    def test_format_admin_stats_text_contains_expected_sections(self):
+        text = _format_admin_stats_text(
+            {
+                "users": {"total": 3, "active": 2, "paused": 1},
+                "alerts": {"sent": 10, "dropped": 4},
+                "alert_drop_reasons": [
+                    {"reason": "opportunity is no longer available", "count": 3},
+                ],
+                "runtime_drop_reasons": {
+                    "min_roi": 5,
+                    "send_failed": 1,
+                },
+            }
+        )
+
+        self.assertIn("📊 Bot stats", text)
+        self.assertIn("👥 Users:", text)
+        self.assertIn("• 🧮 Total: 3", text)
+        self.assertIn("• ✅ Active: 2", text)
+        self.assertIn("• ⏸ Paused: 1", text)
+        self.assertIn("🚨 Alerts:", text)
+        self.assertIn("• 📤 Sent: 10", text)
+        self.assertIn("• 🗑 Dropped: 4", text)
+        self.assertIn("• opportunity is no longer available: 3", text)
+        self.assertIn("• min_roi: 5", text)
 
 
     def test_build_prompt_keyboard_contains_only_back_button(self):
@@ -89,6 +147,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
             shares=50.0,
             avg_price_leg_1=0.36,
             avg_price_leg_2=0.50,
+            calculation_json={},
         )
         pair = SimpleNamespace(match_score=1.0)
         market_a = SimpleNamespace(
@@ -117,8 +176,8 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("💵 Volume: $43", text)
         self.assertIn("⏳ Ends on: 2026-03-28 (in 7 days)", text)
         self.assertIn("🧾 Buy 50 shares each:", text)
-        self.assertIn("• NO on Polymarket @ $0.360 = $18", text)
-        self.assertIn("• YES on Predict.Fun @ $0.500 = $25", text)
+        self.assertIn("• NO on Polymarket: avg fill $0.360 = $18", text)
+        self.assertIn("• YES on Predict.Fun: avg fill $0.500 = $25", text)
         self.assertIn("📊 Volumes ratio: 1.39x", text)
         self.assertIn("🔗 Open markets:", text)
         self.assertIn('<a href="https://polymarket.com/market/manchester-united-win?r=qerasuu">Polymarket</a>', text)
@@ -134,6 +193,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
             shares=50.0,
             avg_price_leg_1=0.36,
             avg_price_leg_2=0.50,
+            calculation_json={},
         )
         pair = SimpleNamespace(
             match_score=1.0,
@@ -162,8 +222,62 @@ class TelegramBotCommandsTests(unittest.TestCase):
             datetime_mock.now.return_value = datetime(2026, 3, 21, tzinfo=timezone.utc)
             text = _format_alert_message(opportunity, pair, market_a, market_b)
 
-        self.assertIn("• Grizzlies on Polymarket @ $0.360 = $18", text)
-        self.assertIn("• Hornets on Predict.Fun @ $0.500 = $25", text)
+        self.assertIn("• Grizzlies on Polymarket: avg fill $0.360 = $18", text)
+        self.assertIn("• Hornets on Predict.Fun: avg fill $0.500 = $25", text)
+
+
+    def test_format_alert_message_shows_best_ask_when_it_differs_from_avg_fill(self):
+        opportunity = SimpleNamespace(
+            direction="A_yes_B_no",
+            net_profit=9.77,
+            net_roi=0.0651,
+            capital_required=150.0,
+            shares=159.77,
+            avg_price_leg_1=0.631,
+            avg_price_leg_2=0.308,
+            calculation_json={
+                "best_price_leg_1": 0.62,
+                "best_price_leg_2": 0.30,
+            },
+        )
+        pair = SimpleNamespace(
+            outcome_mapping_json={
+                "market_a": {"yes_label": "Yes", "no_label": "No"},
+                "market_b": {"yes_label": "Yes", "no_label": "No"},
+            },
+        )
+        market_a = SimpleNamespace(
+            platform="polymarket",
+            title="Brentford FC vs. Everton FC: Draw at halftime?",
+            slug="bre-eve-draw-at-halftime",
+            raw_payload_json={"endDate": "2026-04-11T00:00:00+00:00"},
+        )
+        market_b = SimpleNamespace(
+            platform="predict_fun",
+            title="Brentford FC vs. Everton FC: Draw at halftime?",
+            slug="epl-bre-eve-2026-04-11",
+            platform_market_id="pf-123",
+            raw_payload_json={"resolveDate": "2026-04-11T00:00:00+00:00"},
+        )
+
+        with patch("arbitrage_bot.tg_bot.bot.datetime") as datetime_mock:
+            datetime_mock.now.return_value = datetime(2026, 4, 6, tzinfo=timezone.utc)
+            text = _format_alert_message(opportunity, pair, market_a, market_b)
+
+        self.assertIn("avg fill $0.631 (best ask $0.620)", text)
+        self.assertIn("avg fill $0.308 (best ask $0.300)", text)
+
+
+    def test_build_market_url_expands_relative_raw_path(self):
+        market = SimpleNamespace(
+            platform="predict_fun",
+            slug="ignored-slug",
+            raw_payload_json={"marketUrl": "/market/epl-bre-eve-2026-04-11"},
+        )
+
+        url = _build_market_url(market)
+
+        self.assertEqual(url, "https://predict.fun/market/epl-bre-eve-2026-04-11?ref=077A2")
 
 
     def test_format_status_text_contains_status_summary(self):
@@ -197,6 +311,79 @@ class TelegramBotCommandsTests(unittest.TestCase):
 
         self.assertIn("🔴 Status: Paused", text)
         self.assertIn("📭 Telegram alerts are paused.", text)
+
+
+    def test_format_inactive_chat_text_prompts_start(self):
+        self.assertIn("/start", _format_inactive_chat_text())
+
+
+    def test_format_inactive_chat_text_uses_russian_for_andrei_chat(self):
+        original_chat_id = settings.ANDREI_KURILOV_ID
+        settings.ANDREI_KURILOV_ID = "777"
+        try:
+            text = _format_inactive_chat_text(chat_id=777)
+        finally:
+            settings.ANDREI_KURILOV_ID = original_chat_id
+
+        self.assertIn("Нажмите /start", text)
+
+
+    def test_format_unhandled_message_text_explains_button_flow(self):
+        text = _format_unhandled_message_text(
+            {
+                "min_roi_percent": 5.0,
+                "min_capital_usd": 10.0,
+                "max_capital_usd": 150.0,
+                "min_profit_usd": None,
+                "max_days_to_close": 5,
+                "muted": False,
+            }
+        )
+
+        self.assertIn("buttons below", text.lower())
+        self.assertIn("Settings", text)
+        self.assertIn("Arbitrage Scanner", text)
+
+
+    def test_format_alert_message_uses_russian_for_andrei_chat(self):
+        original_chat_id = settings.ANDREI_KURILOV_ID
+        settings.ANDREI_KURILOV_ID = "777"
+        try:
+            opportunity = SimpleNamespace(
+                direction="A_no_B_yes",
+                net_profit=7.0,
+                net_roi=0.14,
+                capital_required=43.0,
+                shares=50.0,
+                avg_price_leg_1=0.36,
+                avg_price_leg_2=0.50,
+                calculation_json={},
+            )
+            pair = SimpleNamespace(match_score=1.0)
+            market_a = SimpleNamespace(
+                platform="polymarket",
+                title="Will Manchester United FC win on 2026-03-20?",
+                slug="manchester-united-win",
+                raw_payload_json={"endDate": "2026-03-28T00:00:00+00:00"},
+            )
+            market_b = SimpleNamespace(
+                platform="predict_fun",
+                title="Manchester United FC",
+                slug="",
+                platform_market_id="pf-123",
+                raw_payload_json={"resolveDate": "2026-03-27T00:00:00+00:00"},
+            )
+
+            with patch("arbitrage_bot.tg_bot.bot.datetime") as datetime_mock:
+                datetime_mock.now.return_value = datetime(2026, 3, 21, tzinfo=timezone.utc)
+                text = _format_alert_message(opportunity, pair, market_a, market_b, chat_id=777)
+        finally:
+            settings.ANDREI_KURILOV_ID = original_chat_id
+
+        self.assertIn("Прибыль", text)
+        self.assertIn("Объём", text)
+        self.assertIn("Завершится", text)
+        self.assertIn("Открыть рынки", text)
 
 
     def test_should_skip_alert_for_current_preferences_only_checks_muted_state(self):
@@ -311,7 +498,54 @@ class FakeSessionContext:
         return False
 
 
+class FakeRowResult:
+    def __init__(self, row):
+        self.row = row
+
+
+    def one(self):
+        return self.row
+
+
+    def all(self):
+        return self.row
+
+
+class FakeAdminStatsSession:
+    def __init__(self):
+        self.compiled_statements = []
+        self.execute_calls = 0
+
+
+    async def execute(self, stmt):
+        self.compiled_statements.append(str(stmt))
+        self.execute_calls += 1
+
+        if self.execute_calls == 1:
+            return FakeRowResult(SimpleNamespace(total=1, paused=0))
+        if self.execute_calls == 2:
+            return FakeRowResult(SimpleNamespace(sent=0, dropped=0))
+        if self.execute_calls == 3:
+            return FakeRowResult([])
+
+        raise AssertionError(f"unexpected stmt: {stmt}")
+
+
 class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_load_admin_stats_counts_registered_chats_from_telegram_chats(self):
+        session = FakeAdminStatsSession()
+
+        with patch(
+            "arbitrage_bot.tg_bot.handlers.snapshot_counters",
+            return_value={},
+        ):
+            stats = await _load_admin_stats(session)
+
+        self.assertEqual(stats["users"]["total"], 1)
+        self.assertIn("FROM telegram_chats", session.compiled_statements[0])
+        self.assertNotIn("FROM subscriptions", session.compiled_statements[0])
+
+
     async def test_apply_setting_update_reuses_prompt_message_when_available(self):
         message = AsyncMock()
         message.chat.id = 123
@@ -391,6 +625,68 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
         message.bot.edit_message_text.assert_awaited_once()
         message.answer.assert_awaited_once()
         message.delete.assert_awaited_once()
+
+
+    async def test_on_plain_text_setting_answers_with_menu_for_registered_chat(self):
+        message = AsyncMock()
+        message.chat.id = 123
+        message.text = "hello"
+
+        with patch(
+            "arbitrage_bot.tg_bot.handlers.AsyncSessionLocal",
+            return_value=FakeSessionContext(),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers.get_ui_state",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers._has_started_bot",
+            new=AsyncMock(return_value=True),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers.get_user_preferences",
+            new=AsyncMock(
+                return_value={
+                    "min_roi_percent": 5.0,
+                    "min_capital_usd": 10.0,
+                    "max_capital_usd": 150.0,
+                    "min_profit_usd": None,
+                    "max_days_to_close": 5,
+                    "muted": False,
+                }
+            ),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers.clear_ui_state",
+            new=AsyncMock(),
+        ) as clear_mock:
+            await on_plain_text_setting(message)
+
+        message.answer.assert_awaited_once()
+        sent_text = message.answer.await_args.args[0]
+        self.assertIn("buttons below", sent_text.lower())
+        clear_mock.assert_awaited_once()
+
+
+    async def test_on_plain_text_setting_prompts_start_for_unregistered_chat(self):
+        message = AsyncMock()
+        message.chat.id = 123
+        message.text = "hello"
+
+        with patch(
+            "arbitrage_bot.tg_bot.handlers.AsyncSessionLocal",
+            return_value=FakeSessionContext(),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers.get_ui_state",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers._has_started_bot",
+            new=AsyncMock(return_value=False),
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers.get_user_preferences",
+            new=AsyncMock(),
+        ) as preferences_mock:
+            await on_plain_text_setting(message)
+
+        message.answer.assert_awaited_once_with(_format_inactive_chat_text())
+        preferences_mock.assert_not_awaited()
 
 
 class TelegramBotCallbackTests(unittest.IsolatedAsyncioTestCase):

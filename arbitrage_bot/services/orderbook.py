@@ -43,14 +43,11 @@ class OrderbookService:
         for pair in market_pairs:
             poly_platform_id, pf_platform_id = self._resolve_platform_market_ids(pair, market_id_map)
             if not poly_platform_id or not pf_platform_id:
-                log.warning(
-                    "missing platform market id",
-                    pair_id=pair.id,
-                    poly_id=poly_platform_id or "missing",
-                    pf_id=pf_platform_id or "missing",
+                self._record_missing_platform_market_id(
+                    pair,
+                    poly_platform_id,
+                    pf_platform_id,
                 )
-                incr_counter("orderbook.missing_platform_market_id")
-                incr_counter("orderbook.drop.missing_platform_market_id")
                 continue
 
             prepared_pairs.append(
@@ -115,6 +112,57 @@ class OrderbookService:
             )
 
         return results
+
+
+    async def fetch_orderbook_for_pair(self, pair, market_a, market_b):
+        poly_platform_id, pf_platform_id = self._resolve_platform_market_ids_from_rows(
+            market_a,
+            market_b,
+        )
+        if not poly_platform_id or not pf_platform_id:
+            self._record_missing_platform_market_id(
+                pair,
+                poly_platform_id,
+                pf_platform_id,
+            )
+            return None
+
+        pf_orderbook_payload, drop_reason = await self._fetch_predict_fun_orderbook_with_reason(
+            pf_platform_id,
+        )
+        if drop_reason:
+            incr_counter(f"orderbook.drop.{drop_reason}")
+            return None
+
+        prepared_pair = {
+            "pair": pair,
+            "poly_market_id": poly_platform_id,
+            "pf_market_id": pf_platform_id,
+        }
+        polymarket_books = await self._fetch_polymarket_books([prepared_pair])
+        directions, direction_drop_reason = self._build_direction_books(
+            pair,
+            pf_orderbook_payload,
+            polymarket_books,
+        )
+        if not directions:
+            log.debug(
+                "directional books unavailable",
+                pair_id=pair.id,
+            )
+            incr_counter("orderbook.directional_books_unavailable")
+            if direction_drop_reason:
+                incr_counter(f"orderbook.drop.{direction_drop_reason}")
+            return None
+
+        return {
+            "pair": pair,
+            "poly": None,
+            "pf": pf_orderbook_payload,
+            "poly_market_id": poly_platform_id,
+            "pf_market_id": pf_platform_id,
+            "directions": directions,
+        }
 
 
     async def diagnose_pair(self, pair, db_session):
@@ -343,6 +391,31 @@ class OrderbookService:
                 platform_ids[platform] = market_info["platform_market_id"]
 
         return platform_ids.get("polymarket"), platform_ids.get("predict_fun")
+
+
+    def _resolve_platform_market_ids_from_rows(self, market_a, market_b):
+        platform_ids = {}
+
+        for market in (market_a, market_b):
+            if market is None:
+                continue
+            platform = getattr(market, "platform", None)
+            platform_market_id = getattr(market, "platform_market_id", None)
+            if platform and platform_market_id and platform not in platform_ids:
+                platform_ids[platform] = platform_market_id
+
+        return platform_ids.get("polymarket"), platform_ids.get("predict_fun")
+
+
+    def _record_missing_platform_market_id(self, pair, poly_platform_id, pf_platform_id):
+        log.warning(
+            "missing platform market id",
+            pair_id=pair.id,
+            poly_id=poly_platform_id or "missing",
+            pf_id=pf_platform_id or "missing",
+        )
+        incr_counter("orderbook.missing_platform_market_id")
+        incr_counter("orderbook.drop.missing_platform_market_id")
 
 
     def _is_missing_predict_fun_market(self, exc):

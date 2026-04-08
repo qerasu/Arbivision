@@ -11,6 +11,9 @@ class PolymarketAdapter(BaseAdapter):
     clob_base_url = "https://clob.polymarket.com"
     page_limit = 500
     max_pages = 200
+    curl_max_attempts = 3
+    curl_max_time_seconds = 20
+    curl_connect_timeout_seconds = 5
     fallback_errors = (
         httpx.ConnectError,
         httpx.ConnectTimeout,
@@ -81,28 +84,16 @@ class PolymarketAdapter(BaseAdapter):
         url = f"{self.clob_base_url}/books"
         body = json.dumps([{"token_id": str(tid)} for tid in token_ids])
 
-        proc = await asyncio.create_subprocess_exec(
-            "curl",
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "10",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-d", body,
+        return await self._run_curl_json(
+            [
+                "-X", "POST",
+                "-H", "Content-Type: application/json",
+                "-d", body,
+                url,
+            ],
             url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            original_exc=original_exc,
         )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            detail = stderr.decode().strip() or repr(original_exc)
-            raise RuntimeError(f"curl fallback failed for {url}: {detail}") from original_exc
-
-        return json.loads(stdout)
 
 
     async def _get_json(self, path, params=None):
@@ -119,25 +110,37 @@ class PolymarketAdapter(BaseAdapter):
         if params:
             url = f"{url}?{urlencode(params, doseq=True)}"
 
-        proc = await asyncio.create_subprocess_exec(
-            "curl",
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "10",
-            url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
+        return await self._run_curl_json([url], url, original_exc=original_exc)
 
-        if proc.returncode != 0:
-            detail = stderr.decode().strip() or repr(original_exc)
-            raise RuntimeError(f"curl fallback failed for {url}: {detail}") from original_exc
 
-        return json.loads(stdout)
+    async def _run_curl_json(self, extra_args, url, original_exc=None):
+        last_detail = None
+
+        for attempt in range(1, self.curl_max_attempts + 1):
+            proc = await asyncio.create_subprocess_exec(
+                "curl",
+                "--silent",
+                "--show-error",
+                "--fail",
+                "--location",
+                "--connect-timeout",
+                str(self.curl_connect_timeout_seconds),
+                "--max-time",
+                str(self.curl_max_time_seconds),
+                *extra_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode == 0:
+                return json.loads(stdout)
+
+            last_detail = stderr.decode().strip() or repr(original_exc)
+            if attempt < self.curl_max_attempts:
+                await asyncio.sleep(0.75 * attempt)
+
+        raise RuntimeError(f"curl fallback failed for {url}: {last_detail}") from original_exc
 
 
     def _extract_items(self, payload):

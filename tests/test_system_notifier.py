@@ -154,6 +154,18 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details, "insert failed")
 
 
+    def test_detects_transient_network_error_from_ssl_record_layer_failure(self):
+        error = RuntimeError(
+            "ClientOSError: [Errno 1] [SSL: RECORD_LAYER_FAILURE] record layer failure (_ssl.c:2710)"
+        )
+
+        self.assertTrue(system_notifier.is_transient_network_error(error))
+
+
+    def test_does_not_mark_generic_runtime_error_as_transient_network_issue(self):
+        self.assertFalse(system_notifier.is_transient_network_error(RuntimeError("gamma down")))
+
+
     async def test_ingestion_reports_source_error_to_telegram(self):
         db = FakeDbSession()
         service = IngestionService(db)
@@ -173,4 +185,26 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "polymarket")
         self.assertEqual(args[1], "markets sync")
         self.assertEqual(str(args[2]), "gamma down")
+        self.assertEqual(db.rollback_calls, 1)
+
+
+    async def test_ingestion_skips_system_notification_for_transient_network_error(self):
+        db = FakeDbSession()
+        service = IngestionService(db)
+        service.polymarket.fetch_markets = AsyncMock(
+            side_effect=RuntimeError(
+                "SSLError: [SSL: RECORD_LAYER_FAILURE] record layer failure (_ssl.c:2710)"
+            )
+        )
+        service.predict_fun.fetch_markets = AsyncMock(return_value=[])
+        service.polymarket.close = AsyncMock()
+        service.predict_fun.close = AsyncMock()
+
+        with patch(
+            "arbitrage_bot.services.ingestion.send_system_error_notification",
+            new=AsyncMock(),
+        ) as send_mock:
+            await service.sync_markets()
+
+        send_mock.assert_not_awaited()
         self.assertEqual(db.rollback_calls, 1)

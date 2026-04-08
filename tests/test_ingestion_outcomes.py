@@ -2,12 +2,16 @@ import unittest
 from datetime import datetime
 from datetime import timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
+from arbitrage_bot.services import ingestion as ingestion_module
 from arbitrage_bot.services.ingestion import IngestionService
 
 
 class IngestionOutcomeNormalizationTests(unittest.TestCase):
     def setUp(self):
+        ingestion_module._source_last_sync_completed_at.clear()
         self.service = IngestionService(db_session=None)
 
 
@@ -97,6 +101,10 @@ class IngestionOutcomeNormalizationTests(unittest.TestCase):
 
 
 class IngestionLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        ingestion_module._source_last_sync_completed_at.clear()
+
+
     async def test_mark_missing_markets_closed_marks_absent_active_market_as_closed(self):
         missing_market = SimpleNamespace(
             platform="predict_fun",
@@ -141,3 +149,37 @@ class IngestionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(missing_market.updated_at, before)
         self.assertEqual(present_market.status, "active")
         self.assertTrue(present_market.tradable)
+
+
+    async def test_sync_markets_skips_full_resync_within_interval(self):
+        class FakeDbSession:
+            def __init__(self):
+                self.commit_calls = 0
+                self.rollback_calls = 0
+
+
+            async def commit(self):
+                self.commit_calls += 1
+
+
+            async def rollback(self):
+                self.rollback_calls += 1
+
+
+        service = IngestionService(db_session=FakeDbSession())
+        service.polymarket.fetch_markets = AsyncMock(return_value=[])
+        service.predict_fun.fetch_markets = AsyncMock(return_value=[])
+        service._sync_source = AsyncMock(return_value=True)
+
+        with patch.object(ingestion_module.settings, "MARKET_SYNC_INTERVAL_SECONDS", 300.0), patch.object(
+            ingestion_module.settings,
+            "MARKET_REFRESH_SECONDS",
+            60,
+        ):
+            first = await service.sync_markets()
+            second = await service.sync_markets()
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(service.polymarket.fetch_markets.await_count, 1)
+        self.assertEqual(service.predict_fun.fetch_markets.await_count, 1)

@@ -13,6 +13,8 @@ class ArbitrageCalculator:
 
         poly_levels = list(poly_asks)
         pf_levels = list(pf_asks)
+        best_price_poly = float(poly_levels[0][0])
+        best_price_pf = float(pf_levels[0][0])
 
         shares = 0.0
         cost_poly = 0.0
@@ -78,6 +80,8 @@ class ArbitrageCalculator:
             "capital_required": capital,
             "avg_price_leg_1": avg_price_poly,
             "avg_price_leg_2": avg_price_pf,
+            "best_price_leg_1": best_price_poly,
+            "best_price_leg_2": best_price_pf,
             "gross_profit": gross_profit,
             "net_profit": net_profit,
             "gross_roi": net_roi,

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from sqlalchemy.exc import IntegrityError
 
+from arbitrage_bot.core.config import settings
 from arbitrage_bot.tg_bot.preferences import default_preferences
 from arbitrage_bot.tg_bot.preferences import ensure_telegram_user
 from arbitrage_bot.tg_bot.preferences import effective_min_roi
@@ -35,7 +36,7 @@ class TelegramPreferencesTests(unittest.TestCase):
     def test_default_preferences_use_expected_values(self):
         preferences = default_preferences()
 
-        self.assertEqual(preferences["min_roi_percent"], 1)
+        self.assertEqual(preferences["min_roi_percent"], 5)
         self.assertEqual(preferences["min_capital_usd"], 10)
         self.assertEqual(preferences["max_capital_usd"], 150)
         self.assertIsNone(preferences["min_profit_usd"])
@@ -165,10 +166,32 @@ class TelegramPreferencesTests(unittest.TestCase):
         self.assertIn("Min profit\nCurrent: $7.50", text)
 
 
+    def test_format_preferences_text_uses_russian_for_andrei_chat(self):
+        original_chat_id = settings.ANDREI_KURILOV_ID
+        settings.ANDREI_KURILOV_ID = "777"
+        try:
+            text = format_preferences_text(
+                {
+                    "min_roi_percent": 2.5,
+                    "min_capital_usd": 50.0,
+                    "max_capital_usd": 500.0,
+                    "min_profit_usd": None,
+                    "max_days_to_close": 7,
+                },
+                chat_id=777,
+            )
+        finally:
+            settings.ANDREI_KURILOV_ID = original_chat_id
+
+        self.assertIn("Ваши настройки алертов", text)
+        self.assertIn("Мин. объём", text)
+        self.assertIn("Сейчас: выкл", text)
+
+
     def test_effective_min_roi_returns_default(self):
         value = effective_min_roi(default_preferences())
 
-        self.assertEqual(value, 1.0)
+        self.assertEqual(value, 5.0)
 
 
     def test_effective_min_roi_returns_none_when_filters_are_reset(self):
