@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 from urllib.parse import urlencode
 
 import httpx
 from arbitrage_bot.adapters.base import BaseAdapter
+
+_log = logging.getLogger(__name__)
 
 
 class PolymarketAdapter(BaseAdapter):
@@ -14,6 +17,8 @@ class PolymarketAdapter(BaseAdapter):
     curl_max_attempts = 3
     curl_max_time_seconds = 20
     curl_connect_timeout_seconds = 5
+    # consecutive page failures before we stop paginating
+    max_consecutive_page_failures = 2
     fallback_errors = (
         httpx.ConnectError,
         httpx.ConnectTimeout,
@@ -24,6 +29,7 @@ class PolymarketAdapter(BaseAdapter):
     def __init__(self):
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
         self.clob_client = httpx.AsyncClient(base_url=self.clob_base_url, timeout=10.0)
+        self.last_fetch_partial = False
 
 
     async def close(self):
@@ -35,6 +41,8 @@ class PolymarketAdapter(BaseAdapter):
         all_items = []
         offset = 0
         previous_batch_ids = None
+        consecutive_failures = 0
+        had_failures = False
 
         for _ in range(self.max_pages):
             params = {
@@ -43,10 +51,32 @@ class PolymarketAdapter(BaseAdapter):
                 "active": "true",
                 "closed": "false",
             }
-            payload = await self._get_json("/markets", params=params)
+
+            try:
+                payload = await self._get_json("/markets", params=params)
+            except Exception as exc:
+                had_failures = True
+                consecutive_failures += 1
+                _log.warning(
+                    "polymarket page fetch failed (offset=%d, attempt %d/%d): %s",
+                    offset,
+                    consecutive_failures,
+                    self.max_consecutive_page_failures,
+                    exc,
+                )
+                if consecutive_failures >= self.max_consecutive_page_failures:
+                    break
+                offset += self.page_limit
+                continue
+
+            consecutive_failures = 0
             items = self._extract_items(payload)
 
             if items is None:
+                if all_items:
+                    had_failures = True
+                    break
+                self.last_fetch_partial = False
                 return payload
             if not items:
                 break
@@ -63,6 +93,7 @@ class PolymarketAdapter(BaseAdapter):
             previous_batch_ids = batch_ids
             offset += self.page_limit
 
+        self.last_fetch_partial = had_failures
         return all_items
 
 

@@ -209,8 +209,8 @@ class TelegramPreferencesTests(unittest.TestCase):
         self.assertIn("Min ROI\nCurrent: 2.50%", text)
         self.assertIn("Min volume\nCurrent: $50", text)
         self.assertIn("Volume\nCurrent: $500", text)
-        self.assertIn("Polymarket balance\nCurrent: $220", text)
-        self.assertIn("Predict.Fun balance\nCurrent: $280", text)
+        self.assertIn("Polymarket volume limit\nCurrent: $220", text)
+        self.assertIn("Predict.Fun volume limit\nCurrent: $280", text)
         self.assertIn("Min profit\nCurrent: $10", text)
         self.assertIn("Max market end\nCurrent: 7 days", text)
         self.assertNotIn("Use text commands:", text)
@@ -231,8 +231,8 @@ class TelegramPreferencesTests(unittest.TestCase):
 
         self.assertIn("Volume\nCurrent: $140.50", text)
         self.assertIn("Min volume\nCurrent: $40.25", text)
-        self.assertIn("Polymarket balance\nCurrent: $60.75", text)
-        self.assertIn("Predict.Fun balance\nCurrent: $79.75", text)
+        self.assertIn("Polymarket volume limit\nCurrent: $60.75", text)
+        self.assertIn("Predict.Fun volume limit\nCurrent: $79.75", text)
         self.assertIn("Min profit\nCurrent: $7.50", text)
 
 

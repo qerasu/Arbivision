@@ -223,6 +223,7 @@ class IngestionService:
                     "polymarket",
                     self.polymarket.fetch_markets(),
                     self._map_polymarket_market,
+                    self.polymarket,
                 )
             )
 
@@ -232,6 +233,7 @@ class IngestionService:
                     "predict.fun",
                     self.predict_fun.fetch_markets(),
                     self._map_predict_fun_market,
+                    self.predict_fun,
                 )
             )
 
@@ -243,11 +245,12 @@ class IngestionService:
             return_exceptions=True,
         )
 
-        for (source_name, _, mapper), result in zip(source_jobs, results):
+        for (source_name, _, mapper, adapter), result in zip(source_jobs, results):
             synced = await self._sync_source(
                 source_name,
                 result,
                 mapper,
+                adapter,
             )
             if synced:
                 _source_last_sync_completed_at[source_name] = time.monotonic()
@@ -296,7 +299,7 @@ class IngestionService:
         return (now - last_completed_at) >= min_interval
 
 
-    async def _sync_source(self, source_name, payload_or_exc, mapper):
+    async def _sync_source(self, source_name, payload_or_exc, mapper, adapter=None):
         try:
             if isinstance(payload_or_exc, BaseException):
                 raise payload_or_exc
@@ -318,10 +321,18 @@ class IngestionService:
             for chunk in self._chunked(mapped_items, 1000):
                 changed_market_ids.update(await self._upsert_markets(chunk))
                 await self.db.commit()
-            changed_market_ids.update(await self._mark_missing_markets_closed(
-                platform,
-                {item["platform_market_id"] for item in mapped_items},
-            ))
+            is_partial = getattr(adapter, "last_fetch_partial", False)
+            if is_partial:
+                log.warning(
+                    "partial sync completed, skipping stale market detection",
+                    source=source_name,
+                    fetched_markets=len(mapped_items),
+                )
+            else:
+                changed_market_ids.update(await self._mark_missing_markets_closed(
+                    platform,
+                    {item["platform_market_id"] for item in mapped_items},
+                ))
             await self.db.commit()
             self._changed_market_ids_by_platform.setdefault(platform, set()).update(changed_market_ids)
             return True
