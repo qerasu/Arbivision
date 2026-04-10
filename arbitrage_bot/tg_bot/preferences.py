@@ -387,33 +387,38 @@ def format_preferences_text(preferences, language=None):
 
 def format_home_text(preferences, language=None):
     lang = language or preferences.get("language")
-    min_capital = preferences.get("min_capital_usd")
-    min_capital_str = translate(lang, "off", "выкл") if min_capital is None else _format_money(min_capital, fallback='')
-    max_capital = preferences.get("max_capital_usd")
-    max_capital_str = translate(lang, "off", "выкл") if max_capital is None else _format_money(max_capital, fallback='')
-    max_polymarket_capital = preferences.get("max_polymarket_capital_usd")
-    max_polymarket_capital_str = translate(lang, "off", "выкл") if max_polymarket_capital is None else _format_money(max_polymarket_capital, fallback='')
-    max_predict_fun_capital = preferences.get("max_predict_fun_capital_usd")
-    max_predict_fun_capital_str = translate(lang, "off", "выкл") if max_predict_fun_capital is None else _format_money(max_predict_fun_capital, fallback='')
-    min_profit = preferences.get("min_profit_usd")
-    min_profit_str = translate(lang, "off", "выкл") if min_profit is None else _format_money(min_profit, fallback='')
     muted = preferences.get("muted", False)
     status_icon = "🔴" if muted else "🟢"
     status_label = translate(lang, "Paused", "На паузе") if muted else translate(lang, "Active", "Активен")
-    return (
+
+    # собираем только включённые фильтры (значение != None)
+    filter_lines = []
+    filter_defs = [
+        ("min_roi_percent", "📈", "Min ROI", "Мин. ROI"),
+        ("min_capital_usd", "📦", "Min volume", "Мин. объём"),
+        ("max_capital_usd", "💵", "Max volume", "Макс. объём"),
+        ("max_polymarket_capital_usd", "🔵", "Polymarket balance", "Баланс Polymarket"),
+        ("max_predict_fun_capital_usd", "🟣", "Predict.Fun balance", "Баланс Predict.Fun"),
+        ("min_profit_usd", "💰", "Min profit", "Мин. прибыль"),
+        ("max_days_to_close", "⏳", "Max market end", "Макс. срок рынка"),
+    ]
+    for field, icon, label_en, label_ru in filter_defs:
+        value = preferences.get(field)
+        if value is None:
+            continue
+        formatted = _format_field_value(field, preferences, language=lang)
+        filter_lines.append(f"• {icon} {translate(lang, label_en, label_ru)}: {formatted}")
+
+    header = (
         f"{translate(lang, '🔎 Arbitrage Scanner', '🔎 Сканер арбитража')}\n\n"
         f"{translate(lang, 'Monitors Polymarket and Predict.Fun for spread inefficiencies.', 'Следит за Polymarket и Predict.Fun и ищет неэффективности спреда.')}\n\n"
         f"{status_icon} {translate(lang, 'Status', 'Статус')}: {status_label}\n"
-        f"{translate(lang, 'Filters are applied to your personal alert stream.', 'Фильтры применяются только к вашему потоку алертов.')}\n\n"
-        f"{translate(lang, 'Your filters', 'Ваши фильтры')}:\n"
-        f"• 📈 {translate(lang, 'Min ROI', 'Мин. ROI')}: {_format_roi_value(preferences, language=lang)}\n"
-        f"• 📦 {translate(lang, 'Min volume', 'Мин. объём')}: {min_capital_str}\n"
-        f"• 💵 {translate(lang, 'Max volume', 'Макс. объём')}: {max_capital_str}\n"
-        f"• 🔵 {translate(lang, 'Polymarket balance', 'Баланс Polymarket')}: {max_polymarket_capital_str}\n"
-        f"• 🟣 {translate(lang, 'Predict.Fun balance', 'Баланс Predict.Fun')}: {max_predict_fun_capital_str}\n"
-        f"• 💰 {translate(lang, 'Min profit', 'Мин. прибыль')}: {min_profit_str}\n"
-        f"• ⏳ {translate(lang, 'Max market end', 'Макс. срок рынка')}: {_format_days(preferences.get('max_days_to_close'), language=lang)}"
+        f"{translate(lang, 'Filters are applied to your personal alert stream.', 'Фильтры применяются только к вашему потоку алертов.')}"
     )
+
+    if filter_lines:
+        return header + f"\n\n{translate(lang, 'Your filters', 'Ваши фильтры')}:\n" + "\n".join(filter_lines)
+    return header + f"\n\n{translate(lang, 'No active filters.', 'Нет активных фильтров.')}"
 
 
 def format_status_text(preferences, language=None):
