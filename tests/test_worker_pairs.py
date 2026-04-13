@@ -919,7 +919,7 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counters["worker.opportunities_created"], 1)
 
 
-    async def test_process_candidates_skips_immediate_send_in_all_mode(self):
+    async def test_process_candidates_sends_immediately_in_all_mode(self):
         class FakeScalarResult:
             def __init__(self, items):
                 self.items = items
@@ -1014,7 +1014,8 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["opportunities"], 1)
         self.assertEqual(result["deliverable_opportunities"], 1)
-        send_mock.assert_not_awaited()
+        self.assertEqual(fake_db.commit_calls, 2)
+        send_mock.assert_awaited_once()
 
 
     async def test_process_candidates_counts_filtered_delivery_without_send(self):

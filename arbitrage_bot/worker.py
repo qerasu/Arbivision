@@ -502,6 +502,8 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
                             incr_counter("worker.immediate_send_success")
                         else:
                             incr_counter("worker.immediate_send_failed")
+                    if deliveries:
+                        await db.commit()
                 incr_counter("worker.opportunity_processed")
                 opportunity_count += 1
             except Exception as e:
@@ -689,7 +691,7 @@ async def _filter_skippable_pairs(pairs, state):
 
 
 def _should_send_immediately():
-    return settings.APP_RUNTIME_MODE == "worker"
+    return settings.APP_RUNTIME_MODE in {"all", "worker"}
 
 
 def _limit_active_pairs_for_cycle(pairs, market_map, state):

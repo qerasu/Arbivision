@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
 from arbitrage_bot.core.config import settings
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.core.observability import incr_counter
 from arbitrage_bot.models.orm import Alert
 from arbitrage_bot.models.orm import ArbOpportunity
@@ -15,6 +16,8 @@ from arbitrage_bot.models.orm import MarketPair
 from arbitrage_bot.tg_bot.preferences import filter_reason_for_preferences
 from arbitrage_bot.tg_bot.preferences import get_global_preferences
 from arbitrage_bot.tg_bot.preferences import get_telegram_alert_targets
+
+log = get_logger("fanout_manager")
 
 
 
@@ -126,6 +129,17 @@ class FanoutManager:
             incr_counter("fanout.opportunity_filtered_all_targets")
             for drop_reason in sorted(drop_reasons):
                 incr_counter(f"fanout.drop.{drop_reason}")
+            log.debug(
+                "opportunity filtered: no eligible targets",
+                opportunity_id=getattr(opportunity, "id", None),
+                pair_id=getattr(opportunity, "market_pair_id", None),
+                direction=getattr(opportunity, "direction", None),
+                net_roi_pct=round(getattr(opportunity, "net_roi", 0.0) * 100, 2),
+                net_profit=round(float(getattr(opportunity, "net_profit", 0.0)), 2),
+                capital_required=round(float(getattr(opportunity, "capital_required", 0.0)), 2),
+                drop_reasons=sorted(drop_reasons),
+                total_targets=len(targets),
+            )
             return []
 
         existing_chat_ids = set()
@@ -211,6 +225,10 @@ class FanoutManager:
             preferences = target.get("preferences") or {}
             if preferences.get("muted"):
                 drop_reasons.add("muted")
+                log.debug(
+                    "target filtered: muted",
+                    chat_id=target.get("telegram_chat_id"),
+                )
                 continue
             prepared_opportunity = opportunity
             if directions is not None and calculator is not None:
@@ -222,6 +240,12 @@ class FanoutManager:
                 )
                 if prepared_opportunity is None:
                     drop_reasons.add("opportunity_unavailable")
+                    log.debug(
+                        "target filtered: opportunity_unavailable after capital recalc",
+                        chat_id=target.get("telegram_chat_id"),
+                        max_capital=preferences.get("max_capital_usd"),
+                        direction=getattr(opportunity, "direction", None),
+                    )
                     continue
             filter_reason = filter_reason_for_preferences(
                 prepared_opportunity,
@@ -231,6 +255,17 @@ class FanoutManager:
             )
             if filter_reason:
                 drop_reasons.add(filter_reason)
+                log.debug(
+                    "target filtered: preference mismatch",
+                    chat_id=target.get("telegram_chat_id"),
+                    filter_reason=filter_reason,
+                    net_roi_pct=round(getattr(prepared_opportunity, "net_roi", 0.0) * 100, 2),
+                    net_profit=round(float(getattr(prepared_opportunity, "net_profit", 0.0)), 2),
+                    capital_required=round(float(getattr(prepared_opportunity, "capital_required", 0.0)), 2),
+                    pref_min_roi=preferences.get("min_roi_percent"),
+                    pref_max_days=preferences.get("max_days_to_close"),
+                    pref_min_profit=preferences.get("min_profit_usd"),
+                )
                 continue
             target_payload = dict(target)
             target_payload["prepared_opportunity"] = prepared_opportunity

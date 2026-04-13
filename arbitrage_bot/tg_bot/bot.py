@@ -12,7 +12,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from aiogram.types import LinkPreviewOptions
 from aiogram.types import MenuButtonCommands
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import aliased
 
@@ -36,6 +36,7 @@ log = get_logger("tg_bot")
 _shared_dp = None
 _shared_delivery_bot = None
 _DELIVERY_DEDUPE_TTL_SECONDS = max(86400, int(settings.ALERTS_DEDUPE_TTL_SECONDS))
+_FRESH_ALERT_CLAIM_GRACE_SECONDS = max(2.0, float(settings.TELEGRAM_ALERTS_POLL_SECONDS) * 5.0)
 
 
 def setup_bot():
@@ -527,6 +528,7 @@ async def _revalidate_alert_opportunity(session, opportunity, pair, orderbook_se
 
 async def _claim_deliverable_alert(session, now):
     market_b_alias = aliased(Market)
+    claim_after = now - timedelta(seconds=_FRESH_ALERT_CLAIM_GRACE_SECONDS)
     stmt = (
         select(Alert, ArbOpportunity, MarketPair, Market, market_b_alias, UserPreference)
         .join(ArbOpportunity, Alert.opportunity_id == ArbOpportunity.id)
@@ -537,6 +539,10 @@ async def _claim_deliverable_alert(session, now):
         .where(
             Alert.status.in_(["queued", "retry"]),
             or_(Alert.next_retry_at.is_(None), Alert.next_retry_at <= now),
+            or_(
+                Alert.status == "retry",
+                and_(Alert.status == "queued", Alert.created_at <= claim_after),
+            ),
         )
         .order_by(Alert.id)
         .limit(1)

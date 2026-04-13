@@ -123,7 +123,10 @@ class MatcherService:
                 pf_market,
                 allow_fallback_order=True,
             )
-            if outcome_mapping:
+            if outcome_mapping and self._has_compatible_direct_condition_context(
+                poly_signature,
+                pf_signature,
+            ):
                 return {
                     "matched": True,
                     "score": 1.0,
@@ -135,6 +138,15 @@ class MatcherService:
                         "reject_reason": None,
                     },
                 }
+            if outcome_mapping:
+                return self._build_rejection(
+                    poly_market,
+                    pf_market,
+                    poly_signature,
+                    pf_signature,
+                    "direct_condition_context_mismatch",
+                    outcome_mapping=outcome_mapping,
+                )
 
         if not self._are_market_shapes_compatible(poly_signature, pf_signature):
             return self._build_rejection(
@@ -265,9 +277,39 @@ class MatcherService:
             and poly_signature["kind"] == pf_signature["kind"]
             and title_jaccard >= 0.5
         ):
-            return True
+            if poly_signature["kind"] == "matchup":
+                return True
+
+            return self._has_compatible_non_matchup_context(
+                poly_signature,
+                pf_signature,
+            )
 
         return False
+
+
+    def _has_compatible_non_matchup_context(self, poly_signature, pf_signature):
+        poly_context_tokens = self._non_participant_title_tokens(poly_signature)
+        pf_context_tokens = self._non_participant_title_tokens(pf_signature)
+
+        if not poly_context_tokens or not pf_context_tokens:
+            return False
+
+        intersection = len(poly_context_tokens & pf_context_tokens)
+        union = len(poly_context_tokens | pf_context_tokens)
+        if union == 0:
+            return False
+
+        return (intersection / union) >= 0.8
+
+
+    def _non_participant_title_tokens(self, signature):
+        participant_tokens = {
+            token
+            for participant in signature["participants"]
+            for token in participant["tokens"]
+        }
+        return signature["title_tokens"] - participant_tokens
 
 
     def _has_meaningful_title_difference(self, poly_words, pf_words):
@@ -427,8 +469,8 @@ class MatcherService:
     def _extract_subject_participant_from_title(self, title):
         normalized = self.normalizer.normalize_text(title)
         patterns = [
-            r"^will\s+(.+?)\s+(?:win|beat|make|reach|qualify|finish|be)\b",
-            r"^can\s+(.+?)\s+(?:win|beat|make|reach|qualify|finish|be)\b",
+            r"^will\s+(.+?)\s+(?:win|beat|make|reach|qualify|finish|be|have)\b",
+            r"^can\s+(.+?)\s+(?:win|beat|make|reach|qualify|finish|be|have)\b",
         ]
 
         for pattern in patterns:
@@ -439,6 +481,30 @@ class MatcherService:
                     return subject
 
         return None
+
+
+    def _extract_subject_participant_from_market_context(self, market):
+        raw_payload = getattr(market, "raw_payload_json", None) or {}
+        for field_name in ("groupItemTitle",):
+            value = raw_payload.get(field_name)
+            if not self._is_meaningful_context_subject(value):
+                continue
+            return str(value).strip()
+
+        return None
+
+
+    def _is_meaningful_context_subject(self, value):
+        tokens = self._entity_tokens(value)
+        if not tokens:
+            return False
+
+        structural_tokens = {
+            "draw", "half", "halftime", "handicap", "line", "market",
+            "moneyline", "overtime", "period", "quarter", "result",
+            "results", "spread", "tie", "total", "totals", "winner",
+        }
+        return tokens.isdisjoint(structural_tokens)
 
 
     def _extract_binary_head_to_head_participants(self, title):
@@ -504,6 +570,11 @@ class MatcherService:
 
         if not participants:
             subject = self._extract_subject_participant_from_title(title)
+            if subject:
+                participants.append(subject)
+
+        if not participants:
+            subject = self._extract_subject_participant_from_market_context(market)
             if subject:
                 participants.append(subject)
 
@@ -754,6 +825,51 @@ class MatcherService:
             return True
 
         return min(alignment_scores) >= 0.5
+
+
+    def _context_tokens(self, signature):
+        return set((signature.get("context_haystack") or "").split())
+
+
+    def _participant_matches_signature_context(self, participant, signature):
+        participant_tokens = participant["tokens"]
+        context_tokens = self._context_tokens(signature)
+        if not participant_tokens or not context_tokens:
+            return False
+
+        overlap = len(participant_tokens.intersection(context_tokens))
+        return (overlap / len(participant_tokens)) >= 0.8
+
+
+    def _has_compatible_direct_condition_context(self, poly_signature, pf_signature):
+        if not self._are_market_shapes_compatible(poly_signature, pf_signature):
+            return False
+
+        if not self._has_compatible_matchup_participants(poly_signature, pf_signature):
+            return False
+
+        poly_participants = poly_signature["participants"]
+        pf_participants = pf_signature["participants"]
+
+        if poly_participants and pf_participants:
+            return self._calculate_participant_score(
+                poly_participants,
+                pf_participants,
+            ) >= 0.8
+
+        if poly_participants:
+            return all(
+                self._participant_matches_signature_context(participant, pf_signature)
+                for participant in poly_participants
+            )
+
+        if pf_participants:
+            return all(
+                self._participant_matches_signature_context(participant, poly_signature)
+                for participant in pf_participants
+            )
+
+        return True
 
 
     def _are_market_shapes_compatible(self, poly_signature, pf_signature):
@@ -1015,6 +1131,7 @@ class MatcherService:
                     for token in participant["tokens"]
                 }
             ),
+            "context_haystack": context_haystack,
             "category_tokens": self._category_tokens(market),
             "condition_ids": self._extract_condition_ids(market),
             "entities": self.normalizer.extract_entities(context_haystack),

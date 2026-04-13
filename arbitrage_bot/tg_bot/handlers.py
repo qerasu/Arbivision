@@ -562,9 +562,9 @@ async def _load_admin_stats(db_session):
         if key.startswith("fanout.drop."):
             runtime_opportunity_filter_reasons[key.removeprefix("fanout.drop.")] = int(value)
         elif key == "telegram.alert_cancelled_preferences":
-            runtime_alert_drop_reasons["cancelled_preferences"] = int(value)
+            runtime_alert_drop_reasons["cancelled_by_updated_preferences"] = int(value)
         elif key == "telegram.alert_cancelled_revalidation":
-            runtime_alert_drop_reasons["stale_after_revalidation"] = int(value)
+            runtime_alert_drop_reasons["cancelled_after_revalidation"] = int(value)
         elif key == "telegram.alert_send_failed":
             runtime_alert_drop_reasons["send_failed"] = int(value)
 
@@ -580,7 +580,7 @@ async def _load_admin_stats(db_session):
         },
         "alert_drop_reasons": [
             {
-                "reason": str(error_message),
+                "reason": _normalize_alert_reason(error_message),
                 "count": int(count),
             }
             for error_message, count in reason_rows
@@ -593,6 +593,10 @@ async def _load_admin_stats(db_session):
 def _format_admin_stats_text(stats):
     users = stats["users"]
     alerts = stats["alerts"]
+
+    runtime_opportunity_filter_reasons = stats.get("runtime_opportunity_filter_reasons") or {}
+    total_filtered = sum(runtime_opportunity_filter_reasons.values())
+
     lines = [
         "📊 Bot stats",
         "",
@@ -602,8 +606,11 @@ def _format_admin_stats_text(stats):
         f"• ⏸ Paused: {users['paused']}",
         "",
         "🚨 Alerts:",
+        "All time:",
         f"• 📤 Sent: {alerts['sent']}",
-        f"• 🗑 Dropped: {alerts['dropped']}",
+        f"• 🗑 Delivery failed: {alerts['dropped']}",
+        "Runtime:",
+        f"• 🧹 Filtered: {total_filtered}",
     ]
 
     alert_drop_reasons = stats.get("alert_drop_reasons") or []
@@ -611,7 +618,7 @@ def _format_admin_stats_text(stats):
         lines.extend(
             [
                 "",
-                "🧾 Drop reasons (all time):",
+                "🧾 Alert cancellations/failures (all time, DB):",
             ]
         )
         for item in alert_drop_reasons:
@@ -622,21 +629,35 @@ def _format_admin_stats_text(stats):
         lines.extend(
             [
                 "",
-                "⚙️ Alert drop reasons (since restart):",
+                "⚙️ Delivery cancellations (since restart, runtime):",
             ]
         )
         for reason, count in runtime_alert_drop_reasons.items():
             lines.append(f"• {reason}: {count}")
 
-    runtime_opportunity_filter_reasons = stats.get("runtime_opportunity_filter_reasons") or {}
     if runtime_opportunity_filter_reasons:
         lines.extend(
             [
                 "",
-                "🧹 Opportunity filter reasons (since restart):",
+                "🧹 Fanout filter blocks (since restart, runtime):",
             ]
         )
         for reason, count in runtime_opportunity_filter_reasons.items():
             lines.append(f"• {reason}: {count}")
 
     return "\n".join(lines)
+
+
+def _normalize_alert_reason(error_message):
+    text = str(error_message or "").strip()
+    if not text:
+        return "unknown"
+    if text == "opportunity is no longer available":
+        return "cancelled_after_revalidation"
+    if text == "filtered by updated preferences":
+        return "cancelled_by_updated_preferences"
+    if text.startswith("filtered by updated preferences: "):
+        return f"cancelled_by_updated_preferences:{text.removeprefix('filtered by updated preferences: ').strip()}"
+    if text == "delivery deduped after restart":
+        return "delivery_deduped_after_restart"
+    return text

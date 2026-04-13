@@ -83,10 +83,10 @@ class TelegramBotCommandsTests(unittest.TestCase):
                 "users": {"total": 3, "active": 2, "paused": 1},
                 "alerts": {"sent": 10, "dropped": 4},
                 "alert_drop_reasons": [
-                    {"reason": "opportunity is no longer available", "count": 3},
+                    {"reason": "cancelled_after_revalidation", "count": 3},
                 ],
                 "runtime_alert_drop_reasons": {
-                    "cancelled_preferences": 2,
+                    "cancelled_by_updated_preferences": 2,
                     "send_failed": 1,
                 },
                 "runtime_opportunity_filter_reasons": {
@@ -103,11 +103,12 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("🚨 Alerts:", text)
         self.assertIn("• 📤 Sent: 10", text)
         self.assertIn("• 🗑 Dropped: 4", text)
-        self.assertIn("• opportunity is no longer available: 3", text)
-        self.assertIn("⚙️ Alert drop reasons (since restart):", text)
-        self.assertIn("• cancelled_preferences: 2", text)
+        self.assertIn("🧾 Alert cancellations/failures (all time, DB):", text)
+        self.assertIn("• cancelled_after_revalidation: 3", text)
+        self.assertIn("⚙️ Delivery cancellations (since restart, runtime):", text)
+        self.assertIn("• cancelled_by_updated_preferences: 2", text)
         self.assertIn("• send_failed: 1", text)
-        self.assertIn("🧹 Opportunity filter reasons (since restart):", text)
+        self.assertIn("🧹 Fanout filter blocks (since restart, runtime):", text)
         self.assertIn("• min_roi: 5", text)
 
 
@@ -568,7 +569,7 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             stats["runtime_alert_drop_reasons"],
             {
-                "cancelled_preferences": 1,
+                "cancelled_by_updated_preferences": 1,
                 "send_failed": 3,
             },
         )

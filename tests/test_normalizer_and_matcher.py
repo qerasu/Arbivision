@@ -104,6 +104,51 @@ class MatcherServiceTests(unittest.TestCase):
         )
 
 
+    def test_direct_condition_match_uses_group_item_subject_for_binary_markets(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Which company has the best AI model end of April?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"conditionId": "cond-1", "groupItemTitle": "Alibaba"},
+            category="tech",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will Alibaba have the best AI model at the end of April?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={"polymarketConditionIds": ["cond-1"]},
+            category="tech",
+        )
+
+        pair = self.matcher.match_candidates(poly_market, pf_market)
+
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.status, "auto_approved")
+        self.assertEqual(pair.match_score, 1.0)
+
+
+    def test_rejects_direct_condition_match_when_binary_subjects_differ(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Which company has the best AI model end of April?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"conditionId": "cond-1", "groupItemTitle": "Alibaba"},
+            category="tech",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will DeepSeek have the best AI model at the end of April?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={"polymarketConditionIds": ["cond-1"]},
+            category="tech",
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "direct_condition_context_mismatch")
+
+
     def test_rejects_direct_condition_match_when_market_variants_differ(self):
         poly_market = SimpleNamespace(
             id=10,

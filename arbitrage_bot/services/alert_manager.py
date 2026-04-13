@@ -3,9 +3,12 @@ import json
 from sqlalchemy import select
 
 from arbitrage_bot.core.config import settings
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.core.redis import get_redis
 from arbitrage_bot.models.orm import Alert
 from arbitrage_bot.models.orm import ArbOpportunity
+
+log = get_logger("alert_manager")
 
 
 class AlertManager:
@@ -19,6 +22,11 @@ class AlertManager:
     async def process_opportunity(self, pair, calc_result):
         direction = calc_result["direction"]
         if await self._has_sent_alert_for_pair_direction(pair.id, direction):
+            log.debug(
+                "opportunity skipped: already sent alert",
+                pair_id=pair.id,
+                direction=direction,
+            )
             return False
 
         redis = await get_redis()
@@ -41,6 +49,15 @@ class AlertManager:
                 roi_diff = calc_result["net_roi"] - last_state["net_roi"]
 
                 if self._is_change_insignificant(profit_diff, roi_diff):
+                    log.debug(
+                        "opportunity skipped: insignificant delta",
+                        pair_id=pair.id,
+                        direction=direction,
+                        profit_diff=round(profit_diff, 4),
+                        roi_diff=round(roi_diff, 6),
+                        threshold_profit=self.delta_profit,
+                        threshold_roi=self.delta_roi,
+                    )
                     return False
 
         opp = self._build_opportunity(
