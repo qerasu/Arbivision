@@ -46,12 +46,13 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertEqual(keyboard.inline_keyboard[1][1].text, "→ Min profit")
         self.assertEqual(keyboard.inline_keyboard[2][0].text, "→ Polymarket balance")
         self.assertEqual(keyboard.inline_keyboard[2][1].text, "→ Predict.Fun balance")
-        self.assertEqual(keyboard.inline_keyboard[3][0].text, "→ Max market end")
+        self.assertEqual(keyboard.inline_keyboard[3][0].text, "→ Min market end")
+        self.assertEqual(keyboard.inline_keyboard[3][1].text, "→ Max market end")
         self.assertEqual(keyboard.inline_keyboard[4][0].text, "Reset all")
         self.assertEqual(keyboard.inline_keyboard[4][1].text, "← Back")
 
 
-    def test_build_settings_keyboard_shows_disable_all_filters_only_for_admin_chat(self):
+    def test_build_settings_keyboard_has_same_actions_for_admin_chat(self):
         original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
         settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = ["123"]
         try:
@@ -60,8 +61,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
         finally:
             settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = original_system_error_chat_ids
 
-        self.assertEqual(admin_keyboard.inline_keyboard[4][0].text, "⛔ Disable all filters")
-        self.assertEqual(admin_keyboard.inline_keyboard[5][0].text, "Reset all")
+        self.assertEqual(admin_keyboard.inline_keyboard[4][0].text, "Reset all")
         self.assertEqual(user_keyboard.inline_keyboard[4][0].text, "Reset all")
 
 

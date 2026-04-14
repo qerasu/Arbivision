@@ -42,6 +42,7 @@ class TelegramPreferencesTests(unittest.TestCase):
         self.assertIsNone(preferences["max_polymarket_capital_usd"])
         self.assertIsNone(preferences["max_predict_fun_capital_usd"])
         self.assertIsNone(preferences["min_profit_usd"])
+        self.assertIsNone(preferences["min_days_to_close"])
         self.assertEqual(preferences["max_days_to_close"], 5)
 
 
@@ -182,6 +183,23 @@ class TelegramPreferencesTests(unittest.TestCase):
         self.assertEqual(reason, "max_days_to_close")
 
 
+    def test_filter_reason_blocks_by_min_days_to_close(self):
+        now = datetime(2026, 3, 21, tzinfo=timezone.utc)
+        opportunity = SimpleNamespace(net_roi=0.20, capital_required=200.0, net_profit=20.0)
+        market_a = SimpleNamespace(raw_payload_json={"endDate": (now + timedelta(days=1)).isoformat()})
+        market_b = SimpleNamespace(raw_payload_json={"resolveDate": (now + timedelta(days=2)).isoformat()})
+
+        reason = filter_reason_for_preferences(
+            opportunity,
+            market_a,
+            market_b,
+            {"min_roi_percent": None, "min_capital_usd": None, "max_capital_usd": None, "min_profit_usd": None, "min_days_to_close": 3, "max_days_to_close": None},
+            now=now,
+        )
+
+        self.assertEqual(reason, "min_days_to_close")
+
+
     def test_extract_pair_close_datetime_uses_latest_known_market_datetime(self):
         now = datetime(2026, 3, 21, tzinfo=timezone.utc)
         market_a = SimpleNamespace(raw_payload_json={"endDate": (now + timedelta(days=5)).isoformat()})
@@ -201,6 +219,7 @@ class TelegramPreferencesTests(unittest.TestCase):
                 "max_polymarket_capital_usd": 220.0,
                 "max_predict_fun_capital_usd": 280.0,
                 "min_profit_usd": 10.0,
+                "min_days_to_close": 2,
                 "max_days_to_close": 7,
             }
         )
@@ -212,6 +231,7 @@ class TelegramPreferencesTests(unittest.TestCase):
         self.assertIn("Polymarket volume limit\nCurrent: $220", text)
         self.assertIn("Predict.Fun volume limit\nCurrent: $280", text)
         self.assertIn("Min profit\nCurrent: $10", text)
+        self.assertIn("Min market end\nCurrent: 2 days", text)
         self.assertIn("Max market end\nCurrent: 7 days", text)
         self.assertNotIn("Use text commands:", text)
 
@@ -225,6 +245,7 @@ class TelegramPreferencesTests(unittest.TestCase):
                 "max_polymarket_capital_usd": 60.75,
                 "max_predict_fun_capital_usd": 79.75,
                 "min_profit_usd": 7.5,
+                "min_days_to_close": 3,
                 "max_days_to_close": 7,
             }
         )
@@ -245,6 +266,7 @@ class TelegramPreferencesTests(unittest.TestCase):
                 "max_polymarket_capital_usd": None,
                 "max_predict_fun_capital_usd": None,
                 "min_profit_usd": None,
+                "min_days_to_close": None,
                 "max_days_to_close": 7,
                 "language": "ru",
             },

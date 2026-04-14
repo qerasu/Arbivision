@@ -36,6 +36,18 @@ class MatcherService:
             "junior", "senior", "amateur", "professional",
             "open", "pro",
         }
+        self.generic_context_words = {
+            "which", "what", "who",
+            "company", "companies",
+            "best", "top",
+            "model", "models",
+            "end", "ending",
+            "have", "has", "had",
+            "win", "wins", "winner", "winners",
+            "price", "prices",
+            "market", "markets",
+            "ai",
+        }
         self.generic_outcome_labels = {
             "up", "down", "over", "under",
             "higher", "lower", "above", "below",
@@ -126,6 +138,9 @@ class MatcherService:
             if outcome_mapping and self._has_compatible_direct_condition_context(
                 poly_signature,
                 pf_signature,
+            ) and self._has_compatible_market_context(
+                poly_signature,
+                pf_signature,
             ):
                 return {
                     "matched": True,
@@ -186,6 +201,15 @@ class MatcherService:
                     pf_signature,
                     "number_mismatch",
                 )
+
+        if not self._has_compatible_market_context(poly_signature, pf_signature):
+            return self._build_rejection(
+                poly_market,
+                pf_market,
+                poly_signature,
+                pf_signature,
+                "market_context_mismatch",
+            )
 
         # jaccard index for basic text comparison
         poly_words = poly_signature["title_tokens"]
@@ -289,8 +313,8 @@ class MatcherService:
 
 
     def _has_compatible_non_matchup_context(self, poly_signature, pf_signature):
-        poly_context_tokens = self._non_participant_title_tokens(poly_signature)
-        pf_context_tokens = self._non_participant_title_tokens(pf_signature)
+        poly_context_tokens = self._meaningful_non_participant_title_tokens(poly_signature)
+        pf_context_tokens = self._meaningful_non_participant_title_tokens(pf_signature)
 
         if not poly_context_tokens or not pf_context_tokens:
             return False
@@ -300,7 +324,13 @@ class MatcherService:
         if union == 0:
             return False
 
-        return (intersection / union) >= 0.8
+        if (intersection / union) < 0.8:
+            return False
+
+        return not (
+            poly_context_tokens - pf_context_tokens
+            or pf_context_tokens - poly_context_tokens
+        )
 
 
     def _non_participant_title_tokens(self, signature):
@@ -310,6 +340,30 @@ class MatcherService:
             for token in participant["tokens"]
         }
         return signature["title_tokens"] - participant_tokens
+
+
+    def _meaningful_non_participant_title_tokens(self, signature):
+        return {
+            token
+            for token in self._non_participant_title_tokens(signature)
+            if token not in self.stop_words
+            if token not in self.generic_context_words
+        }
+
+
+    def _meaningful_context_tokens(self, signature):
+        participant_tokens = {
+            token
+            for participant in signature["participants"]
+            for token in participant["tokens"]
+        }
+        return {
+            token
+            for token in self._context_tokens(signature)
+            if token not in participant_tokens
+            and token not in self.stop_words
+            and token not in self.generic_context_words
+        }
 
 
     def _has_meaningful_title_difference(self, poly_words, pf_words):
@@ -623,6 +677,7 @@ class MatcherService:
         parts = [
             getattr(market, "title", "") or "",
             getattr(market, "slug", "") or "",
+            getattr(market, "category", "") or "",
             raw_payload.get("title") or "",
             raw_payload.get("name") or "",
             raw_payload.get("groupItemTitle") or "",
@@ -870,6 +925,36 @@ class MatcherService:
             )
 
         return True
+
+
+    def _has_compatible_market_context(self, poly_signature, pf_signature):
+        if "matchup" in {poly_signature["kind"], pf_signature["kind"]}:
+            return True
+
+        poly_context_tokens = self._meaningful_context_tokens(poly_signature)
+        pf_context_tokens = self._meaningful_context_tokens(pf_signature)
+
+        if not poly_context_tokens or not pf_context_tokens:
+            return True
+
+        if poly_context_tokens == pf_context_tokens:
+            return True
+
+        intersection = poly_context_tokens & pf_context_tokens
+        if not intersection:
+            return False
+
+        overlap_floor = min(len(poly_context_tokens), len(pf_context_tokens))
+        if overlap_floor == 0:
+            return True
+
+        if (len(intersection) / overlap_floor) < 0.8:
+            return False
+
+        return not (
+            poly_context_tokens - pf_context_tokens
+            or pf_context_tokens - poly_context_tokens
+        )
 
 
     def _are_market_shapes_compatible(self, poly_signature, pf_signature):

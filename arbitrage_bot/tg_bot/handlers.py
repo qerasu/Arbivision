@@ -16,7 +16,6 @@ from arbitrage_bot.models.orm import User
 from arbitrage_bot.models.orm import UserPreference
 from arbitrage_bot.tg_bot.localization import translate
 from arbitrage_bot.tg_bot.preferences import clear_ui_state
-from arbitrage_bot.tg_bot.preferences import disable_user_preferences
 from arbitrage_bot.tg_bot.preferences import ensure_telegram_user
 from arbitrage_bot.tg_bot.preferences import format_home_text
 from arbitrage_bot.tg_bot.preferences import format_preferences_text
@@ -139,28 +138,10 @@ async def on_nav_callback(callback):
                 callback,
                 translate(
                     lang,
-                    "Your settings were reset.\n\n"
-                    "Default Telegram filters were restored for your chat.\n\n",
-                    "Ваши настройки сброшены.\n\n"
-                    "Для этого чата восстановлены Telegram-фильтры по умолчанию.\n\n",
-                ) +
-                f"{format_preferences_text(preferences)}",
-                reply_markup=_build_settings_keyboard(preferences, chat_id=callback.message.chat.id),
-            )
-        elif action == "disable_filters":
-            if not _is_admin_chat(callback.message.chat.id):
-                await _safe_answer_callback(callback)
-                return
-            preferences = await disable_user_preferences(session, callback.message.chat.id)
-            await clear_ui_state(session, callback.message.chat.id)
-            lang = preferences.get("language")
-            await _safe_edit_text(
-                callback,
-                translate(
-                    lang,
-                    "All Telegram filters are disabled for this admin chat.\n\n"
+                    "All Telegram filters are disabled for this chat.\n\n"
                     "You will receive every alert that passes system checks.\n\n",
-                    "Для этого админского чата отключены все Telegram-фильтры.\n\n"
+                    "Ваши настройки сброшены.\n\n"
+                    "Для этого чата отключены все Telegram-фильтры.\n\n"
                     "Вы будете получать все алерты, которые проходят системные проверки.\n\n",
                 ) +
                 f"{format_preferences_text(preferences)}",
@@ -362,20 +343,15 @@ def _build_settings_keyboard(preferences=None, chat_id=None):
         ],
         [
             InlineKeyboardButton(
+                text=f"→ {translate(lang, 'Min market end', 'Мин. срок рынка')}",
+                callback_data="tg_edit:min_days_to_close",
+            ),
+            InlineKeyboardButton(
                 text=f"→ {translate(lang, 'Max market end', 'Макс. срок рынка')}",
                 callback_data="tg_edit:max_days_to_close",
             ),
         ],
     ]
-    if _is_admin_chat(chat_id):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=translate(lang, "⛔ Disable all filters", "⛔ Выключить все фильтры"),
-                    callback_data="tg_nav:disable_filters",
-                ),
-            ]
-        )
     rows.append(
         [
             InlineKeyboardButton(
@@ -445,12 +421,14 @@ def _parse_setting_value(field_name, raw_value, language=None):
             raise ValueError(translate(language, "Value must be greater than zero.", "Значение должно быть больше нуля."))
         return parsed
 
-    if field_name == "max_days_to_close":
+    if field_name in {"min_days_to_close", "max_days_to_close"}:
         try:
             parsed = int(value)
         except (ValueError, TypeError):
             raise ValueError(translate(language, "Enter a whole number, e.g. 30", "Введите целое число, например 30"))
         if parsed <= 0:
+            if field_name == "min_days_to_close":
+                raise ValueError(translate(language, "Min market end must be greater than zero days.", "Мин. срок рынка должен быть больше нуля дней."))
             raise ValueError(translate(language, "Max market end must be greater than zero days.", "Макс. срок рынка должен быть больше нуля дней."))
         return parsed
 
@@ -494,7 +472,7 @@ def _format_success_value(field_name, value, language=None):
     if field_name in {"min_capital_usd", "max_capital_usd", "max_polymarket_capital_usd", "max_predict_fun_capital_usd", "min_profit_usd"}:
         return f"${float(value):.0f}"
 
-    if field_name == "max_days_to_close":
+    if field_name in {"min_days_to_close", "max_days_to_close"}:
         return translate(language, f"{int(value)} days", f"{int(value)} дн.")
 
     return str(value)
@@ -508,6 +486,7 @@ def _settings_success_label(field_name, language=None):
         "max_polymarket_capital_usd": "Баланс Polymarket",
         "max_predict_fun_capital_usd": "Баланс Predict.Fun",
         "min_profit_usd": "Мин. прибыль",
+        "min_days_to_close": "Мин. срок рынка",
         "max_days_to_close": "Макс. срок рынка",
     }
     return translate(language, {
@@ -517,6 +496,7 @@ def _settings_success_label(field_name, language=None):
         "max_polymarket_capital_usd": "Polymarket balance",
         "max_predict_fun_capital_usd": "Predict.Fun balance",
         "min_profit_usd": "Min profit",
+        "min_days_to_close": "Min market end",
         "max_days_to_close": "Max market end",
     }[field_name], ru_labels[field_name])
 

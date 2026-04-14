@@ -576,6 +576,94 @@ class MatcherServiceTests(unittest.TestCase):
         self.assertIsNone(pair)
 
 
+    def test_rejects_chinese_ai_company_market_against_generic_ai_model_market(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Best Chinese AI Company end of April?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"groupItemTitle": "Alibaba"},
+            category="tech",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will Alibaba have the best AI model at the end of April?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+            category="tech",
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "market_context_mismatch")
+
+
+    def test_rejects_math_ai_model_market_against_generic_ai_model_market(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Which company has the best Math AI model end of April?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"groupItemTitle": "DeepSeek"},
+            category="tech",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will DeepSeek have the best AI model at the end of April?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+            category="tech",
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "market_context_mismatch")
+
+
+    def test_rejects_generic_title_match_when_category_adds_missing_qualifier(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Which company has the best AI model end of April?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"groupItemTitle": "Alibaba"},
+            category="china",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will Alibaba have the best AI model at the end of April?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+            category="tech",
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "market_context_mismatch")
+
+
+    def test_rejects_generic_title_match_when_subcategory_adds_missing_qualifier(self):
+        poly_market = SimpleNamespace(
+            id=10,
+            title="Which company has the best AI model end of April?",
+            outcomes_json=[{"id": "poly-y", "label": "Yes"}, {"id": "poly-n", "label": "No"}],
+            raw_payload_json={"groupItemTitle": "DeepSeek", "subcategory": "math"},
+            category="tech",
+        )
+        pf_market = SimpleNamespace(
+            id=20,
+            title="Will DeepSeek have the best AI model at the end of April?",
+            outcomes_json=[{"id": "pf-y", "label": "Yes"}, {"id": "pf-n", "label": "No"}],
+            raw_payload_json={},
+            category="tech",
+        )
+
+        decision = self.matcher.explain_match(poly_market, pf_market)
+
+        self.assertFalse(decision["matched"])
+        self.assertEqual(decision["reason"]["reject_reason"], "market_context_mismatch")
+
+
     def test_rejects_halftime_market_against_full_match_draw_market(self):
         poly_market = SimpleNamespace(
             id=10,

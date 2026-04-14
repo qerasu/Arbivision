@@ -90,6 +90,7 @@ def upgrade():
     sa.Column('max_polymarket_capital_usd', sa.Float(), nullable=True),
     sa.Column('max_predict_fun_capital_usd', sa.Float(), nullable=True),
     sa.Column('min_profit_usd', sa.Float(), nullable=True),
+    sa.Column('min_days_to_close', sa.Integer(), nullable=True),
     sa.Column('max_days_to_close', sa.Integer(), nullable=True),
     sa.Column('muted', sa.Boolean(), nullable=False),
     sa.Column('language', sa.String(), nullable=True),

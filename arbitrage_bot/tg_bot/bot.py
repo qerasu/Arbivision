@@ -488,6 +488,7 @@ def _build_runtime_preferences(preferences):
             "max_polymarket_capital_usd": preferences.max_polymarket_capital_usd,
             "max_predict_fun_capital_usd": preferences.max_predict_fun_capital_usd,
             "min_profit_usd": preferences.min_profit_usd,
+            "min_days_to_close": preferences.min_days_to_close,
             "max_days_to_close": preferences.max_days_to_close,
             "muted": preferences.muted,
         }

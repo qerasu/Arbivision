@@ -109,6 +109,7 @@ class UserPreference(Base):
     max_polymarket_capital_usd = Column(Float, nullable=True)
     max_predict_fun_capital_usd = Column(Float, nullable=True)
     min_profit_usd = Column(Float, nullable=True)
+    min_days_to_close = Column(Integer, nullable=True)
     max_days_to_close = Column(Integer, nullable=True)
     muted = Column(Boolean, nullable=False, default=False)
     language = Column(String, nullable=True, default=None)

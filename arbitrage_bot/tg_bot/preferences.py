@@ -19,6 +19,7 @@ DEFAULT_PREFERENCES = {
     "max_polymarket_capital_usd": None,
     "max_predict_fun_capital_usd": None,
     "min_profit_usd": None,
+    "min_days_to_close": None,
     "max_days_to_close": 5,
 }
 FIELD_LABELS = {
@@ -28,6 +29,7 @@ FIELD_LABELS = {
     "max_polymarket_capital_usd": "Polymarket balance",
     "max_predict_fun_capital_usd": "Predict.Fun balance",
     "min_profit_usd": "Min profit",
+    "min_days_to_close": "Min market end",
     "max_days_to_close": "Max market end",
 }
 DATETIME_FIELDS = (
@@ -66,6 +68,7 @@ def _make_default_preference(user_id):
         max_polymarket_capital_usd=DEFAULT_PREFERENCES["max_polymarket_capital_usd"],
         max_predict_fun_capital_usd=DEFAULT_PREFERENCES["max_predict_fun_capital_usd"],
         min_profit_usd=DEFAULT_PREFERENCES["min_profit_usd"],
+        min_days_to_close=DEFAULT_PREFERENCES["min_days_to_close"],
         max_days_to_close=DEFAULT_PREFERENCES["max_days_to_close"],
         muted=False,
     )
@@ -82,6 +85,7 @@ def _serialize_user_preferences(preferences):
         "max_polymarket_capital_usd": preferences.max_polymarket_capital_usd,
         "max_predict_fun_capital_usd": preferences.max_predict_fun_capital_usd,
         "min_profit_usd": preferences.min_profit_usd,
+        "min_days_to_close": preferences.min_days_to_close,
         "max_days_to_close": preferences.max_days_to_close,
         "muted": preferences.muted,
         "language": preferences.language,
@@ -254,32 +258,14 @@ async def reset_user_preferences(db_session, chat_id):
     preferences.max_polymarket_capital_usd = DEFAULT_PREFERENCES["max_polymarket_capital_usd"]
     preferences.max_predict_fun_capital_usd = DEFAULT_PREFERENCES["max_predict_fun_capital_usd"]
     preferences.min_profit_usd = DEFAULT_PREFERENCES["min_profit_usd"]
-    preferences.max_days_to_close = DEFAULT_PREFERENCES["max_days_to_close"]
-    preferences.updated_at = datetime.now(timezone.utc)
-    await db_session.commit()
-    return _serialize_user_preferences(preferences)
-
-
-async def disable_user_preferences(db_session, chat_id):
-    telegram_chat = await ensure_telegram_user(db_session, chat_id)
-    stmt = select(UserPreference).where(UserPreference.user_id == telegram_chat.user_id)
-    result = await db_session.execute(stmt)
-    preferences = result.scalars().first()
-
-    if preferences is None:
-        preferences = UserPreference(
-            user_id=telegram_chat.user_id,
-            muted=False,
-        )
-        db_session.add(preferences)
-
+    preferences.min_days_to_close = None
+    preferences.max_days_to_close = None
     preferences.min_roi_percent = None
     preferences.min_capital_usd = None
     preferences.max_capital_usd = None
     preferences.max_polymarket_capital_usd = None
     preferences.max_predict_fun_capital_usd = None
     preferences.min_profit_usd = None
-    preferences.max_days_to_close = None
     preferences.updated_at = datetime.now(timezone.utc)
     await db_session.commit()
     return _serialize_user_preferences(preferences)
@@ -390,6 +376,7 @@ def format_preferences_text(preferences, language=None):
     max_predict_fun_capital_str = translate(lang, "off", "выкл") if max_predict_fun_capital is None else _format_money(max_predict_fun_capital, fallback='')
     min_profit = preferences.get("min_profit_usd")
     min_profit_str = translate(lang, "off", "выкл") if min_profit is None else _format_money(min_profit, fallback='')
+    min_days = _format_days(preferences.get("min_days_to_close"), language=lang)
     max_days = _format_days(preferences.get("max_days_to_close"), language=lang)
     return (
         f"{translate(lang, '⚙️ Your alert settings', '⚙️ Ваши настройки алертов')}\n\n"
@@ -405,6 +392,8 @@ def format_preferences_text(preferences, language=None):
         f"{translate(lang, 'Current', 'Сейчас')}: {max_predict_fun_capital_str}\n\n"
         f"💰 {translate(lang, 'Min profit', 'Мин. прибыль')}\n"
         f"{translate(lang, 'Current', 'Сейчас')}: {min_profit_str}\n\n"
+        f"⌛ {translate(lang, 'Min market end', 'Мин. срок рынка')}\n"
+        f"{translate(lang, 'Current', 'Сейчас')}: {min_days}\n\n"
         f"⏳ {translate(lang, 'Max market end', 'Макс. срок рынка')}\n"
         f"{translate(lang, 'Current', 'Сейчас')}: {max_days}"
     )
@@ -425,6 +414,7 @@ def format_home_text(preferences, language=None):
         ("max_polymarket_capital_usd", "🔵", "Polymarket balance", "Баланс Polymarket"),
         ("max_predict_fun_capital_usd", "🟣", "Predict.Fun balance", "Баланс Predict.Fun"),
         ("min_profit_usd", "💰", "Min profit", "Мин. прибыль"),
+        ("min_days_to_close", "⌛", "Min market end", "Мин. срок рынка"),
         ("max_days_to_close", "⏳", "Max market end", "Макс. срок рынка"),
     ]
     for field, icon, label_en, label_ru in filter_defs:
@@ -476,6 +466,7 @@ def format_setting_prompt(field_name, preferences, language=None):
         "max_polymarket_capital_usd": translate(lang, "Enter how much USD you have available on Polymarket.", "Введите, сколько USD у вас доступно на Polymarket."),
         "max_predict_fun_capital_usd": translate(lang, "Enter how much USD you have available on Predict.Fun.", "Введите, сколько USD у вас доступно на Predict.Fun."),
         "min_profit_usd": translate(lang, "Enter the minimum profit in USD required for an alert.", "Введите минимальную прибыль в USD для получения алерта."),
+        "min_days_to_close": translate(lang, "Enter the minimum number of days until market expiry.", "Введите минимальное количество дней до окончания рынка."),
         "max_days_to_close": translate(lang, "Enter the maximum number of days until market expiry.", "Введите максимальное количество дней до окончания рынка."),
     }[field_name]
 
@@ -514,13 +505,15 @@ def filter_reason_for_preferences(opportunity, market_a, market_b, preferences, 
     if min_profit is not None and opportunity.net_profit < float(min_profit):
         return "min_profit"
 
+    min_days = preferences.get("min_days_to_close")
     max_days = preferences.get("max_days_to_close")
-    if max_days is None:
+    if min_days is None and max_days is None:
         return None
 
     close_at = extract_pair_close_datetime(market_a, market_b)
     if close_at is None:
-        # unknown expiry — filter when max_days is active
+        if min_days is not None:
+            return "min_days_to_close"
         return "max_days_to_close"
 
     reference_now = now or datetime.now(timezone.utc)
@@ -530,7 +523,9 @@ def filter_reason_for_preferences(opportunity, market_a, market_b, preferences, 
         reference_now = reference_now.replace(tzinfo=timezone.utc)
 
     delta_days = (close_at - reference_now).total_seconds() / 86400
-    if delta_days > float(max_days):
+    if min_days is not None and delta_days < float(min_days):
+        return "min_days_to_close"
+    if max_days is not None and delta_days > float(max_days):
         return "max_days_to_close"
 
     return None
@@ -634,6 +629,7 @@ def _field_label(field_name, language=None):
         "max_polymarket_capital_usd": "Баланс Polymarket",
         "max_predict_fun_capital_usd": "Баланс Predict.Fun",
         "min_profit_usd": "Мин. прибыль",
+        "min_days_to_close": "Мин. срок рынка",
         "max_days_to_close": "Макс. срок рынка",
     }
     return translate(language, FIELD_LABELS[field_name], ru_labels[field_name])

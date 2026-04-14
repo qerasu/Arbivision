@@ -259,6 +259,7 @@ class FanoutManager:
                     net_profit=round(float(getattr(prepared_opportunity, "net_profit", 0.0)), 2),
                     capital_required=round(float(getattr(prepared_opportunity, "capital_required", 0.0)), 2),
                     pref_min_roi=preferences.get("min_roi_percent"),
+                    pref_min_days=preferences.get("min_days_to_close"),
                     pref_max_days=preferences.get("max_days_to_close"),
                     pref_min_profit=preferences.get("min_profit_usd"),
                 )
