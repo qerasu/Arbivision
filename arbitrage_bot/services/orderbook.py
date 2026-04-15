@@ -349,7 +349,18 @@ class OrderbookService:
             books[token_id] = cached_value
 
         for chunk in self._chunked(missing_token_ids, self._polymarket_batch_size):
-            fetched_books = await self.polymarket.fetch_books(chunk)
+            try:
+                fetched_books = await self.polymarket.fetch_books(chunk)
+            except Exception as exc:
+                log.warning(
+                    "polymarket books fetch failed in batch",
+                    source="polymarket",
+                    failed_token_count=len(chunk),
+                    sample_token_ids=chunk[:5],
+                    error=format_compact_error(exc),
+                )
+                incr_counter("orderbook.fetch.polymarket_fetch_failed")
+                continue
             fetched_by_token_id = {
                 str(item.get("asset_id")): item
                 for item in fetched_books

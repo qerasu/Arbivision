@@ -298,6 +298,44 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+    async def test_polymarket_books_fetch_failure_skips_pairs_without_failing_cycle(self):
+        service = OrderbookService()
+        service.predict_fun.fetch_orderbook = AsyncMock(
+            return_value={"data": {"asks": [[0.2, 5]], "bids": [[0.7, 6]]}}
+        )
+        service.polymarket.fetch_books = AsyncMock(side_effect=RuntimeError("clob down"))
+
+        pair = SimpleNamespace(
+            id=9,
+            market_id_a=200,
+            market_id_b=100,
+            outcome_mapping_json={
+                "market_a": {"yes": "poly-yes", "no": "poly-no"},
+                "market_b": {"yes": "pf-yes", "no": "pf-no"},
+            },
+        )
+        db = FakeDbSession(
+            [
+                (100, "polymarket", "poly-100"),
+                (200, "predict_fun", "pf-200"),
+            ]
+        )
+
+        with patch("arbitrage_bot.services.orderbook.log.warning") as warning_mock:
+            result = await service.fetch_orderbooks_for_pairs([pair], db)
+
+        self.assertEqual(result, [])
+        counters = snapshot_counters()
+        self.assertEqual(counters["orderbook.fetch.polymarket_fetch_failed"], 1)
+        self.assertEqual(counters["orderbook.directional_books_unavailable"], 1)
+        self.assertEqual(counters["orderbook.drop.polymarket_yes_asks_missing"], 1)
+        warning_mock.assert_called_once()
+        _, kwargs = warning_mock.call_args
+        self.assertEqual(kwargs["source"], "polymarket")
+        self.assertEqual(kwargs["failed_token_count"], 2)
+        self.assertEqual(kwargs["sample_token_ids"], ["poly-no", "poly-yes"])
+
+
     async def test_reuses_short_ttl_cache_for_orderbooks(self):
         service = OrderbookService()
         service.predict_fun.fetch_orderbook = AsyncMock(
