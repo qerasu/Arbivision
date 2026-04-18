@@ -11,11 +11,9 @@ if ($IntervalMinutes -lt 5 -or $IntervalMinutes -gt 10) {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $taskName = 'Arbivision Auto Update'
 $scriptPath = Join-Path $repoRoot 'utilities\run_auto_update.ps1'
-$startTime = (Get-Date).AddMinutes(1)
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
-$trigger = New-ScheduledTaskTrigger -Once -At $startTime -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration ([TimeSpan]::MaxValue)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+$startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
+$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+schtasks.exe /Create /F /TN $taskName /SC MINUTE /MO $IntervalMinutes /ST $startTime /TR $taskCommand | Out-Null
 
 Write-Host "Scheduled Task '$taskName' installed with interval $IntervalMinutes minutes."
