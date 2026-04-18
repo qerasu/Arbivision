@@ -12,8 +12,13 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $taskName = 'Arbivision Auto Update'
 $scriptPath = Join-Path $repoRoot 'utilities\run_auto_update.ps1'
 $startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
-$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$scriptPath"""
+$taskNameArg = '"' + $taskName + '"'
 
-schtasks.exe /Create /F /TN $taskName /SC MINUTE /MO $IntervalMinutes /ST $startTime /TR $taskCommand | Out-Null
+& schtasks.exe /Create /F /TN $taskNameArg /SC MINUTE /MO $IntervalMinutes /ST $startTime /TR $taskCommand
+
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to create scheduled task, exit code: $LASTEXITCODE"
+}
 
 Write-Host "Scheduled Task '$taskName' installed with interval $IntervalMinutes minutes."
