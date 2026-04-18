@@ -63,4 +63,4 @@ class LiveApiSmokeTests(unittest.TestCase):
         self.assertIsInstance(payload["market_counts"]["total"], int)
         self.assertIsInstance(payload["pair_counts"]["total"], int)
         self.assertIsInstance(payload["opportunity_counts"]["total"], int)
-        self.assertIsInstance(payload["alert_counts"]["queued"], int)
+        self.assertIsInstance(payload["alert_counts"]["sent_runtime"], int)

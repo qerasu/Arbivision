@@ -570,7 +570,7 @@ def _format_admin_stats_text(stats):
         lines.extend(
             [
                 "",
-                "⚙️ Delivery cancellations (since restart, runtime):",
+                "⚙️ Delivery cancellations (since restart):",
             ]
         )
         for reason, count in runtime_alert_drop_reasons.items():
@@ -580,7 +580,7 @@ def _format_admin_stats_text(stats):
         lines.extend(
             [
                 "",
-                "🧹 Fanout filter blocks (since restart, runtime):",
+                "🧹 Fanout filter blocks (since restart):",
             ]
         )
         for reason, count in runtime_opportunity_filter_reasons.items():

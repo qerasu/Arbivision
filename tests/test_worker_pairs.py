@@ -410,7 +410,7 @@ class WorkerDatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(worker_module.settings, "DB_CLEANUP_INTERVAL_SECONDS", 10800.0), patch.object(
             worker_module.settings,
             "DB_CLEANUP_RETENTION_SECONDS",
-            86400.0,
+            10800.0,
         ), patch(
             "arbitrage_bot.worker._clear_empty_count",
             new=AsyncMock(),

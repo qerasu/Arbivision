@@ -13,7 +13,7 @@ Arbivision ищет арбитражные возможности между **P
 - дедуплицирует возможности через Redis
 - создаёт и доставляет Telegram-алерты
 - поддерживает пользовательские лимиты по общему объёму и по отдельному балансу на `Polymarket` и `Predict.Fun`
-- даёт внутренние API-ручки для health, status и админ-диагностики
+- даёт внутренние API-ручки для health и status, а админ-статистику показывает в Telegram
 
 ## Стек
 
@@ -46,10 +46,6 @@ utilities/start.py локальный dev-запуск проекта
 utilities/stop.py  безопасная остановка процесса и контейнеров
 ```
 
-## Правила оформления
-
-- между функциями, методами и классами оставляем по 2 пустые строки
-- завершающий перевод строки в конце файла не добавляем
 
 ## Как работает пайплайн
 
@@ -117,7 +113,7 @@ python3 utilities/stop.py
 
 `utilities/stop.py` завершает только сохранённый PID, не пытаясь убивать посторонние `uvicorn`-процессы, а затем делает `docker compose stop`.
 
-Опция `python3 utilities/stop.py --drop` удаляет контейнеры и volume базы данных. Это разрушительное действие, поэтому скрипт дополнительно спрашивает подтверждение.
+Опция `python3 utilities/stop.py --drop` удаляет контейнеры, сеть и volumes для Postgres и Redis. Это разрушительное действие, поэтому скрипт дополнительно спрашивает подтверждение.
 
 ## Альтернативные способы запуска
 
@@ -163,6 +159,9 @@ python3 -m arbitrage_bot.run_telegram
 
 - `MARKET_REFRESH_SECONDS`
 - `MARKET_SYNC_INTERVAL_SECONDS`
+- `POLYMARKET_INCREMENTAL_MAX_PAGES`
+- `POLYMARKET_FULL_SYNC_INTERVAL_SECONDS`
+- `MATCHER_FULL_REMATCH_INTERVAL_SECONDS`
 - `MAX_MARKET_PAIRS_PER_LOOP`
 - `EMPTY_ORDERBOOK_THRESHOLD`
 - `MAX_ACTIVE_PAIRS_PER_CYCLE`
@@ -191,7 +190,7 @@ python3 -m arbitrage_bot.run_telegram
 
 Сейчас `TELEGRAM_DELIVERY_RETRY_SECONDS` и `TELEGRAM_DELIVERY_MAX_ATTEMPTS` зарезервированы в конфиге, но не участвуют в доставке обычных user-alerts: worker делает одну немедленную попытку отправки, а подавление повторов обеспечивается комбинацией dedupe-state opportunity, per-user event state и delivery-marker в Redis.
 
-По умолчанию cleanup БД запускается раз в 3 часа и удаляет записи старше 24 часов только из runtime-таблиц рынков и пар: пользовательские сущности (`users`, `telegram_chats`, `subscriptions`, `user_preferences`) автоматически не удаляются.
+По умолчанию cleanup БД запускается раз в 3 часа и удаляет записи старше 3 часов только из runtime-таблиц рынков и пар: пользовательские сущности (`users`, `telegram_chats`, `subscriptions`, `user_preferences`) автоматически не удаляются.
 
 ### API и рантайм
 
@@ -203,14 +202,7 @@ python3 -m arbitrage_bot.run_telegram
 
 - выбор языка интерфейса при первом запуске (English / Русский)
 - паузу и возобновление алертов
-- пользовательские фильтры через inline-кнопки
-  - `min ROI`
-  - `min capital`
-  - `max capital`
-  - `Polymarket balance`
-  - `Predict.Fun balance`
-  - `min profit`
-  - `max days to close`
+- пользовательские фильтры через inline-кнопки: `min ROI`, `min capital`, `max capital`, `Polymarket balance`, `Predict.Fun balance`, `min profit`, `min market end`, `max market end`
 - отдельные лимиты баланса на `Polymarket` и `Predict.Fun`
 - ввод числовых значений следующим сообщением
 - выключение числового фильтра через `off` / `выкл`
@@ -225,7 +217,7 @@ python3 -m arbitrage_bot.run_telegram
 
 Выбранный язык сохраняется в `UserPreference.language` и применяется ко всем сообщениям и кнопкам. Локализация реализована в `arbitrage_bot/tg_bot/localization.py` через функцию `translate(language, en_text, ru_text)`.
 
-Кнопка `Stats` открывает сводку по пользователям, алертам и причинам дропа. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
+Кнопка `Stats` открывает Telegram-сводку по пользователям, runtime-алертам и причинам fanout/drop. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
 
 ## HTTP API
 
@@ -236,7 +228,7 @@ python3 -m arbitrage_bot.run_telegram
 - `GET /api/health`
 - `GET /api/status`
 
-`GET /api/status` возвращает агрегаты по рынкам, парам и runtime-метрикам: сколько opportunities было создано, сколько отфильтровано на fanout и сколько alert-сообщений реально отправлено.
+`GET /api/status` возвращает агрегаты по рынкам, парам и runtime-метрикам в полях `opportunity_counts.total`, `opportunity_counts.filtered_runtime` и `alert_counts.sent_runtime`.
 
 ## Тесты
 
@@ -248,7 +240,7 @@ python3 -m arbitrage_bot.run_telegram
 python3 utilities/run_tests.py
 ```
 
-Для полного запуска тестов нужны переменные окружения (работает только при запущенном проекте)
+Для полного запуска тестов нужны переменные окружения (работает только при локально запущенном проекте)
 
 ```bash
 RUN_LIVE_TESTS=1 RUN_LIVE_DB_TESTS=1 python3 utilities/run_tests.py

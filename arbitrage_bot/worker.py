@@ -261,6 +261,7 @@ async def _cleanup_database_records(db, state):
     referenced_market_ids_stmt = select(MarketPair.market_id_a).union(
         select(MarketPair.market_id_b)
     )
+    
     referenced_market_rows = (await db.execute(referenced_market_ids_stmt)).all()
     referenced_market_ids = {
         market_id
