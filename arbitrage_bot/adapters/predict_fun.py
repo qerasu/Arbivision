@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import subprocess
 
 import httpx
 from arbitrage_bot.adapters.base import BaseAdapter
@@ -142,17 +143,12 @@ class PredictFunAdapter(BaseAdapter):
 
         last_detail = None
         for attempt in range(1, max_attempts + 1):
-            proc = await asyncio.create_subprocess_exec(
-                "curl",
-                "--config",
-                "-",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            returncode, stdout, stderr = await self._run_curl_process(
+                ["curl", "--config", "-"],
+                stdin_payload=config_payload,
             )
-            stdout, stderr = await proc.communicate(config_payload)
 
-            if proc.returncode == 0:
+            if returncode == 0:
                 return json.loads(stdout)
 
             last_detail = stderr.decode().strip() or repr(original_exc)
@@ -160,6 +156,28 @@ class PredictFunAdapter(BaseAdapter):
                 await asyncio.sleep(0.75 * attempt)
 
         raise RuntimeError(f"curl fallback failed for {url}: {last_detail}") from original_exc
+
+
+    async def _run_curl_process(self, args, stdin_payload=None):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE if stdin_payload is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate(stdin_payload)
+            return proc.returncode, stdout, stderr
+        except NotImplementedError:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                args,
+                input=stdin_payload,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            return completed.returncode, completed.stdout, completed.stderr
 
 
     def _extract_items(self, payload):

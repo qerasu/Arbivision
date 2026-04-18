@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import subprocess
 from urllib.parse import urlencode
 
 import httpx
@@ -147,23 +148,22 @@ class PolymarketAdapter(BaseAdapter):
         last_detail = None
 
         for attempt in range(1, self.curl_max_attempts + 1):
-            proc = await asyncio.create_subprocess_exec(
-                "curl",
-                "--silent",
-                "--show-error",
-                "--fail",
-                "--location",
-                "--connect-timeout",
-                str(self.curl_connect_timeout_seconds),
-                "--max-time",
-                str(self.curl_max_time_seconds),
-                *extra_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            returncode, stdout, stderr = await self._run_curl_process(
+                [
+                    "curl",
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--location",
+                    "--connect-timeout",
+                    str(self.curl_connect_timeout_seconds),
+                    "--max-time",
+                    str(self.curl_max_time_seconds),
+                    *extra_args,
+                ]
             )
-            stdout, stderr = await proc.communicate()
 
-            if proc.returncode == 0:
+            if returncode == 0:
                 return json.loads(stdout)
 
             last_detail = stderr.decode().strip() or repr(original_exc)
@@ -171,6 +171,26 @@ class PolymarketAdapter(BaseAdapter):
                 await asyncio.sleep(0.75 * attempt)
 
         raise RuntimeError(f"curl fallback failed for {url}: {last_detail}") from original_exc
+
+
+    async def _run_curl_process(self, args):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            return proc.returncode, stdout, stderr
+        except NotImplementedError:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            return completed.returncode, completed.stdout, completed.stderr
 
 
     def _extract_items(self, payload):

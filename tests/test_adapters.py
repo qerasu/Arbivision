@@ -1,5 +1,7 @@
+import subprocess
 import unittest
 from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import httpx
 from arbitrage_bot.adapters.polymarket import PolymarketAdapter
@@ -94,6 +96,31 @@ class PolymarketAdapterTests(unittest.IsolatedAsyncioTestCase):
         adapter._curl_get_json.assert_awaited_once()
 
 
+    async def test_run_curl_process_falls_back_to_threaded_subprocess_when_async_subprocess_is_unsupported(self):
+        adapter = PolymarketAdapter()
+
+        with patch(
+            "arbitrage_bot.adapters.polymarket.asyncio.create_subprocess_exec",
+            side_effect=NotImplementedError(),
+        ), patch(
+            "arbitrage_bot.adapters.polymarket.asyncio.to_thread",
+            new=AsyncMock(
+                return_value=subprocess.CompletedProcess(
+                    args=["curl"],
+                    returncode=0,
+                    stdout=b'{"data":[]}',
+                    stderr=b"",
+                )
+            ),
+        ) as to_thread_mock:
+            returncode, stdout, stderr = await adapter._run_curl_process(["curl", "--version"])
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stdout, b'{"data":[]}')
+        self.assertEqual(stderr, b"")
+        to_thread_mock.assert_awaited_once()
+
+
 class PredictFunAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_fetch_markets_collects_all_pages(self):
         adapter = PredictFunAdapter()
@@ -176,3 +203,31 @@ class PredictFunAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["curl_max_time_seconds"], adapter.orderbook_curl_max_time_seconds)
         self.assertEqual(kwargs["curl_connect_timeout_seconds"], adapter.orderbook_curl_connect_timeout_seconds)
         self.assertEqual(kwargs["timeout"].connect, adapter.orderbook_connect_timeout_seconds)
+
+
+    async def test_run_curl_process_falls_back_to_threaded_subprocess_when_async_subprocess_is_unsupported(self):
+        adapter = PredictFunAdapter()
+
+        with patch(
+            "arbitrage_bot.adapters.predict_fun.asyncio.create_subprocess_exec",
+            side_effect=NotImplementedError(),
+        ), patch(
+            "arbitrage_bot.adapters.predict_fun.asyncio.to_thread",
+            new=AsyncMock(
+                return_value=subprocess.CompletedProcess(
+                    args=["curl"],
+                    returncode=0,
+                    stdout=b'{"data":[]}',
+                    stderr=b"",
+                )
+            ),
+        ) as to_thread_mock:
+            returncode, stdout, stderr = await adapter._run_curl_process(
+                ["curl", "--config", "-"],
+                stdin_payload=b"silent\n",
+            )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stdout, b'{"data":[]}')
+        self.assertEqual(stderr, b"")
+        to_thread_mock.assert_awaited_once()
