@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import traceback
 from time import monotonic
 
 from aiogram import Bot
@@ -103,7 +104,18 @@ def _extract_error_details(error):
         if orig_details:
             return orig_details
 
-    return str(error or "").strip()
+    details = str(error or "").strip()
+    if details:
+        return details
+
+    tb = getattr(error, "__traceback__", None)
+    if tb is not None:
+        frames = traceback.extract_tb(tb)
+        if frames:
+            frame = frames[-1]
+            return f"raised at {frame.filename}:{frame.lineno} in {frame.name}"
+
+    return ""
 
 
 def _should_skip_notification(dedupe_key):

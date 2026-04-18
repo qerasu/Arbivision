@@ -177,6 +177,19 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details, "insert failed")
 
 
+    def test_uses_traceback_location_when_error_message_is_empty(self):
+        def trigger_not_implemented():
+            raise NotImplementedError()
+
+        try:
+            trigger_not_implemented()
+        except NotImplementedError as error:
+            details = system_notifier.format_error_details(error)
+
+        self.assertIn("raised at", details)
+        self.assertIn("in trigger_not_implemented", details)
+
+
     def test_detects_transient_network_error_from_ssl_record_layer_failure(self):
         error = RuntimeError(
             "ClientOSError: [Errno 1] [SSL: RECORD_LAYER_FAILURE] record layer failure (_ssl.c:2710)"
