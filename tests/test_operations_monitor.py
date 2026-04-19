@@ -15,29 +15,47 @@ class OperationsMonitorTests(unittest.IsolatedAsyncioTestCase):
         operations_monitor.reset_monitor_state()
 
 
-    async def test_duplicate_markets_warning_and_recovery(self):
+    async def test_duplicate_markets_warning_and_recovery_logs_locally_without_telegram(self):
         with patch(
             "arbitrage_bot.services.operations_monitor.send_system_notification",
             new=AsyncMock(),
-        ) as send_mock:
+        ) as send_mock, patch("arbitrage_bot.services.operations_monitor.log.warning") as warning_mock, patch(
+            "arbitrage_bot.services.operations_monitor.log.info"
+        ) as info_mock:
             await operations_monitor.record_duplicate_markets("polymarket", 60)
             await operations_monitor.record_duplicate_markets("polymarket", 0)
 
-        self.assertEqual(send_mock.await_count, 2)
-        self.assertEqual(send_mock.await_args_list[0].kwargs["level"], "warning")
-        self.assertEqual(send_mock.await_args_list[1].kwargs["level"], "recovery")
+        send_mock.assert_not_awaited()
+        warning_mock.assert_called_once()
+        info_mock.assert_called_once()
+        self.assertEqual(warning_mock.call_args.kwargs["monitor_level"], "warning")
+        self.assertEqual(info_mock.call_args.kwargs["monitor_level"], "recovery")
+
+
+    async def test_duplicate_markets_critical_logs_locally_without_telegram(self):
+        with patch(
+            "arbitrage_bot.services.operations_monitor.send_system_notification",
+            new=AsyncMock(),
+        ) as send_mock, patch("arbitrage_bot.services.operations_monitor.log.critical") as critical_mock:
+            await operations_monitor.record_duplicate_markets("polymarket", 239)
+
+        send_mock.assert_not_awaited()
+        critical_mock.assert_called_once()
+        self.assertEqual(critical_mock.call_args.kwargs["monitor_level"], "critical")
+        self.assertEqual(critical_mock.call_args.kwargs["duplicate_rows"], 239)
 
 
     async def test_duplicate_markets_streak_warning(self):
         with patch(
             "arbitrage_bot.services.operations_monitor.send_system_notification",
             new=AsyncMock(),
-        ) as send_mock:
+        ) as send_mock, patch("arbitrage_bot.services.operations_monitor.log.warning") as warning_mock:
             for _ in range(5):
                 await operations_monitor.record_duplicate_markets("polymarket", 25)
 
-        send_mock.assert_awaited_once()
-        self.assertEqual(send_mock.await_args.kwargs["level"], "warning")
+        send_mock.assert_not_awaited()
+        warning_mock.assert_called_once()
+        self.assertEqual(warning_mock.call_args.kwargs["monitor_level"], "warning")
 
 
     async def test_orderbook_coverage_alerts_and_recovers(self):

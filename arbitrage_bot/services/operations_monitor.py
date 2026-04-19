@@ -1,5 +1,6 @@
 from time import monotonic
 
+from arbitrage_bot.core.logging import get_logger
 from arbitrage_bot.services.system_notifier import send_system_notification
 
 _DUPLICATE_WARNING_ROWS = 50
@@ -28,6 +29,7 @@ _telegram_state = {
     "active": False,
     "outage_detected": False,
 }
+log = get_logger("operations_monitor")
 
 
 def reset_monitor_state():
@@ -41,6 +43,24 @@ def reset_monitor_state():
     _telegram_state["last_failure_at"] = None
     _telegram_state["active"] = False
     _telegram_state["outage_detected"] = False
+
+
+def _log_duplicate_markets_event(source, details, level, rows, streak):
+    context = {
+        "source": source,
+        "operation": f"duplicate markets {source}",
+        "monitor_level": level,
+        "duplicate_rows": rows,
+        "streak": streak,
+        "details": details,
+    }
+    if level == "critical":
+        log.critical("duplicate markets monitor event", **context)
+        return
+    if level == "warning":
+        log.warning("duplicate markets monitor event", **context)
+        return
+    log.info("duplicate markets monitor event", **context)
 
 
 async def record_duplicate_markets(source, duplicate_rows):
@@ -76,21 +96,23 @@ async def record_duplicate_markets(source, duplicate_rows):
 
     if desired_severity is None:
         if state["severity"] is not None:
-            await send_system_notification(
-                "monitor",
-                f"duplicate markets {normalized_source}",
+            _log_duplicate_markets_event(
+                normalized_source,
                 f"duplicate market anomaly recovered on {normalized_source}",
-                level="recovery",
+                "recovery",
+                rows,
+                state["streak"],
             )
             state["severity"] = None
         return
 
     if state["severity"] != desired_severity:
-        await send_system_notification(
-            "monitor",
-            f"duplicate markets {normalized_source}",
+        _log_duplicate_markets_event(
+            normalized_source,
             details,
-            level=desired_severity,
+            desired_severity,
+            rows,
+            state["streak"],
         )
         state["severity"] = desired_severity
 
