@@ -92,6 +92,7 @@ FIELD_METADATA = {
     item["name"]: item
     for item in SETTINGS_FIELDS
 }
+ALLOWED_PREFERENCE_FIELDS = frozenset(FIELD_METADATA)
 DATETIME_FIELDS = (
     "endDate",
     "end_date",
@@ -274,6 +275,9 @@ async def get_user_preferences(db_session, chat_id, chat_type="private"):
 
 
 async def set_user_preference(db_session, chat_id, field_name, field_value):
+    if field_name not in ALLOWED_PREFERENCE_FIELDS:
+        raise ValueError(f"unknown preference field: {field_name}")
+
     telegram_chat = await ensure_telegram_user(db_session, chat_id)
     stmt = select(UserPreference).where(UserPreference.user_id == telegram_chat.user_id)
     result = await db_session.execute(stmt)
@@ -326,20 +330,8 @@ async def reset_user_preferences(db_session, chat_id):
         )
         db_session.add(preferences)
 
-    preferences.min_roi_percent = DEFAULT_PREFERENCES["min_roi_percent"]
-    preferences.min_capital_usd = DEFAULT_PREFERENCES["min_capital_usd"]
-    preferences.max_capital_usd = DEFAULT_PREFERENCES["max_capital_usd"]
-    preferences.max_polymarket_capital_usd = DEFAULT_PREFERENCES["max_polymarket_capital_usd"]
-    preferences.max_predict_fun_capital_usd = DEFAULT_PREFERENCES["max_predict_fun_capital_usd"]
-    preferences.min_profit_usd = DEFAULT_PREFERENCES["min_profit_usd"]
-    preferences.min_days_to_close = None
-    preferences.max_days_to_close = None
-    preferences.min_roi_percent = None
-    preferences.min_capital_usd = None
-    preferences.max_capital_usd = None
-    preferences.max_polymarket_capital_usd = None
-    preferences.max_predict_fun_capital_usd = None
-    preferences.min_profit_usd = None
+    for field_name in ALLOWED_PREFERENCE_FIELDS:
+        setattr(preferences, field_name, None)
     preferences.updated_at = datetime.now(timezone.utc)
     await db_session.commit()
     return _serialize_user_preferences(preferences)
@@ -656,8 +648,6 @@ def _format_roi_value(preferences, language=None):
     return f"{float(min_roi):.2f}%"
 
 
-def _field_label(field_name, language=None):
-    return get_setting_label(field_name, language=language)
 
 
 def _extract_platform_capitals(opportunity, market_a, market_b):

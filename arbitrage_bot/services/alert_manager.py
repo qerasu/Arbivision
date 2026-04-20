@@ -19,7 +19,7 @@ class AlertManager:
 
     async def process_opportunity(self, pair, calc_result):
         direction = calc_result["direction"]
-        redis = await get_redis()
+        redis = get_redis()
         dedupe_key = f"alert-dedupe:{pair.pair_hash}:{direction}"
         state_to_save = self._build_dedupe_state(calc_result)
 
@@ -60,7 +60,7 @@ class AlertManager:
             return
 
         try:
-            redis = await get_redis()
+            redis = get_redis()
         except Exception:
             redis = None
         await self._store_dedupe_state(redis, dedupe_key, state_to_save)

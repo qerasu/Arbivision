@@ -149,7 +149,7 @@ async def _should_skip_notification_async(dedupe_key):
         return False
 
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is not None:
             redis_key = _system_error_redis_key(dedupe_key)
             created = await redis.set(redis_key, "1", ex=max(1, int(cooldown)), nx=True)

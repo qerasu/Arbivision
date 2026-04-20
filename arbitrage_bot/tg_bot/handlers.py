@@ -4,7 +4,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import func
-from sqlalchemy.future import select
+from sqlalchemy import select
 
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.database import AsyncSessionLocal
@@ -14,8 +14,8 @@ from arbitrage_bot.models.orm import TelegramChat
 from arbitrage_bot.models.orm import User
 from arbitrage_bot.models.orm import UserPreference
 from arbitrage_bot.tg_bot.localization import translate
+from arbitrage_bot.tg_bot.preferences import ALLOWED_PREFERENCE_FIELDS
 from arbitrage_bot.tg_bot.preferences import clear_ui_state
-from arbitrage_bot.tg_bot.preferences import ensure_telegram_user
 from arbitrage_bot.tg_bot.preferences import format_home_text
 from arbitrage_bot.tg_bot.preferences import format_preferences_text
 from arbitrage_bot.tg_bot.preferences import format_setting_prompt
@@ -35,12 +35,8 @@ router = Router()
 @router.message(Command("start"))
 async def cmd_start(message):
     async with AsyncSessionLocal() as session:
-        await ensure_telegram_user(
-            session,
-            message.chat.id,
-            chat_type=getattr(message.chat, "type", "private"),
-        )
-        language = await get_user_language(session, message.chat.id)
+        preferences = await get_user_preferences(session, message.chat.id)
+        language = preferences.get("language")
 
         if language is None:
             await message.answer(
@@ -49,7 +45,6 @@ async def cmd_start(message):
             )
             return
 
-        preferences = await get_user_preferences(session, message.chat.id)
         await clear_ui_state(session, message.chat.id)
 
     await message.answer(
@@ -154,6 +149,9 @@ async def on_nav_callback(callback):
 @router.callback_query(F.data.startswith("tg_edit:"))
 async def on_edit_callback(callback):
     field_name = callback.data.split(":", 1)[1]
+    if field_name not in ALLOWED_PREFERENCE_FIELDS:
+        await _safe_answer_callback(callback)
+        return
 
     async with AsyncSessionLocal() as session:
         preferences = await get_user_preferences(session, callback.message.chat.id)
@@ -199,7 +197,7 @@ async def on_plain_text_setting(message):
                 await message.answer(str(exc))
                 return
 
-            await _apply_setting_update(message, field_name, value, ui_state)
+            await _apply_setting_update(session, message, field_name, value, ui_state)
             return
 
         if not await _has_started_bot(session, message.chat.id):
@@ -216,10 +214,9 @@ async def on_plain_text_setting(message):
     )
 
 
-async def _apply_setting_update(message, field_name, value, ui_state):
-    async with AsyncSessionLocal() as session:
-        preferences = await set_user_preference(session, message.chat.id, field_name, value)
-        await clear_ui_state(session, message.chat.id)
+async def _apply_setting_update(session, message, field_name, value, ui_state):
+    preferences = await set_user_preference(session, message.chat.id, field_name, value)
+    await clear_ui_state(session, message.chat.id)
 
     lang = preferences.get("language")
     prompt_message_id = None
@@ -534,7 +531,7 @@ def _format_admin_stats_text(stats):
     total_filtered = sum(runtime_opportunity_filter_reasons.values())
 
     lines = [
-        "📊 Bot stats, changed fees",
+        "📊 Bot stats",
         "",
         "👥 Users:",
         f"• 🧮 Total: {users['total']}",

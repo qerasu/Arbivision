@@ -25,13 +25,13 @@ def _get_float_setting(name, default):
 
 
 # for telegram chat ids
-def _get_list_setting(name, default):
+def _get_set_setting(name, default):
     raw = os.getenv(name, "")
 
     if not raw:
-        return list(default)
-        
-    return [x.strip() for x in raw.split(",") if x.strip()]
+        return frozenset(default)
+
+    return frozenset(x.strip() for x in raw.split(",") if x.strip())
 
 
 class Settings:
@@ -69,8 +69,8 @@ class Settings:
     DB_CLEANUP_RETENTION_SECONDS = _get_float_setting("DB_CLEANUP_RETENTION_SECONDS", 21600.0)
 
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_DEFAULT_CHAT_IDS = _get_list_setting("TELEGRAM_DEFAULT_CHAT_IDS", [])
-    TELEGRAM_SYSTEM_ERROR_CHAT_IDS = _get_list_setting("TELEGRAM_SYSTEM_ERROR_CHAT_IDS", [])
+    TELEGRAM_DEFAULT_CHAT_IDS = _get_set_setting("TELEGRAM_DEFAULT_CHAT_IDS", [])
+    TELEGRAM_SYSTEM_ERROR_CHAT_IDS = _get_set_setting("TELEGRAM_SYSTEM_ERROR_CHAT_IDS", [])
     TELEGRAM_ALERTS_POLL_SECONDS = _get_float_setting("TELEGRAM_ALERTS_POLL_SECONDS", 0.2)
     FANOUT_TARGET_CACHE_TTL_SECONDS = _get_float_setting("FANOUT_TARGET_CACHE_TTL_SECONDS", 2.0)
     TELEGRAM_DELIVERY_RETRY_SECONDS = _get_float_setting("TELEGRAM_DELIVERY_RETRY_SECONDS", 15.0)

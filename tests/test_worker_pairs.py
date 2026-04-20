@@ -2,7 +2,7 @@ import asyncio
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -1003,7 +1003,7 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "arbitrage_bot.worker.get_redis",
-            new=AsyncMock(return_value=fake_redis),
+            new=MagicMock(return_value=fake_redis),
         ):
             active_pairs = await _filter_skippable_pairs(pairs, self.state)
 
@@ -1019,7 +1019,7 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "arbitrage_bot.worker.get_redis",
-            new=AsyncMock(return_value=fake_redis),
+            new=MagicMock(return_value=fake_redis),
         ):
             await _update_empty_counts(checked_pairs, {"pair-2"}, self.state)
 

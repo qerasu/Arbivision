@@ -3,10 +3,12 @@ import os
 
 def load_env_file(path):
     # loads key=value pairs from a .env file without overriding existing env vars
-    if not os.path.exists(path):
-        raise ValueError("path provided to the .env file does not exist")
+    try:
+        f = open(path, "r", encoding="utf-8")
+    except FileNotFoundError:
+        raise FileNotFoundError(f".env file not found: {path}")
 
-    with open(path, "r", encoding="utf-8") as f:
+    with f:
         for raw_line in f:
             line = raw_line.strip()
             if not line or line.startswith("#"):

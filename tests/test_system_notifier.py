@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.services import system_notifier
@@ -30,11 +30,11 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.original_cooldown = settings.TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS
 
         settings.TELEGRAM_BOT_TOKEN = "token"
-        settings.TELEGRAM_DEFAULT_CHAT_IDS = ["1001"]
-        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = []
+        settings.TELEGRAM_DEFAULT_CHAT_IDS = frozenset({"1001"})
+        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = frozenset()
         settings.TELEGRAM_SYSTEM_ERROR_COOLDOWN_SECONDS = 300.0
         
-        self.redis_patcher = patch("arbitrage_bot.services.system_notifier.get_redis", new=AsyncMock(return_value=None))
+        self.redis_patcher = patch("arbitrage_bot.services.system_notifier.get_redis", new=MagicMock(return_value=None))
         self.redis_patcher.start()
 
 
@@ -53,7 +53,7 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot), patch(
             "arbitrage_bot.services.system_notifier.get_redis",
-            new=AsyncMock(return_value=None),
+            new=MagicMock(return_value=None),
         ):
             sent = await system_notifier.send_system_error_notification(
                 "polymarket",
@@ -76,7 +76,7 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot), patch(
             "arbitrage_bot.services.system_notifier.get_redis",
-            new=AsyncMock(return_value=None),
+            new=MagicMock(return_value=None),
         ):
             sent = await system_notifier.send_system_notification(
                 "monitor",
@@ -102,7 +102,7 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot), patch(
             "arbitrage_bot.services.system_notifier.get_redis",
-            new=AsyncMock(return_value=fake_redis),
+            new=MagicMock(return_value=fake_redis),
         ):
             first = await system_notifier.send_system_error_notification(
                 "worker",
@@ -126,7 +126,7 @@ class SystemNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(system_notifier, "_get_shared_bot", return_value=fake_bot), patch(
             "arbitrage_bot.services.system_notifier.get_redis",
-            new=AsyncMock(side_effect=RuntimeError("redis down")),
+            new=MagicMock(side_effect=RuntimeError("redis down")),
         ):
             first = await system_notifier.send_system_error_notification(
                 "worker",

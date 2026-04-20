@@ -807,7 +807,7 @@ async def _get_empty_counts(pair_hashes, state):
         return {}
 
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is not None:
             keys = [_pair_empty_count_key(pair_hash) for pair_hash in pair_hashes]
             values = await redis.mget(keys)
@@ -828,7 +828,7 @@ async def _get_empty_counts(pair_hashes, state):
 
 async def _get_empty_count_client():
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is not None:
             return redis
     except Exception:
@@ -839,7 +839,7 @@ async def _get_empty_count_client():
 
 async def _clear_empty_count(pair_hash, state):
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is not None:
             await redis.delete(_pair_empty_count_key(pair_hash))
     except Exception:
@@ -851,7 +851,7 @@ async def _clear_empty_count(pair_hash, state):
 async def _increment_empty_count(pair_hash, state):
     now = time.monotonic()
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is not None:
             key = _pair_empty_count_key(pair_hash)
             pipe = redis.pipeline()

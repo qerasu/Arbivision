@@ -342,7 +342,7 @@ async def _is_duplicate_delivery(alert):
         return False
 
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is None:
             return False
         return bool(await redis.get(_delivery_dedupe_key(alert)))
@@ -357,7 +357,7 @@ async def _store_delivery_marker(alert):
         return
 
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is None:
             return
         await redis.set(
@@ -414,7 +414,7 @@ async def _load_alert_event_state(alert, opportunity, pair=None):
         return None
 
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is None:
             return None
         raw_value = await redis.get(state_key)
@@ -433,7 +433,7 @@ async def _store_alert_event_state(alert, event_opportunity, sent_opportunity, p
         return
 
     try:
-        redis = await get_redis()
+        redis = get_redis()
         if redis is None:
             return
         await redis.setex(

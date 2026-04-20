@@ -58,7 +58,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
 
     def test_build_settings_keyboard_has_same_actions_for_admin_chat(self):
         original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
-        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = ["123"]
+        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = frozenset({"123"})
         try:
             admin_keyboard = _build_settings_keyboard(chat_id=123)
             user_keyboard = _build_settings_keyboard(chat_id=456)
@@ -84,7 +84,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
 
     def test_build_home_keyboard_shows_stats_only_for_admin_chat(self):
         original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
-        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = ["123"]
+        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = frozenset({"123"})
         try:
             keyboard = _build_home_keyboard(chat_id=123)
         finally:
@@ -565,9 +565,6 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
         message.delete = AsyncMock()
 
         with patch(
-            "arbitrage_bot.tg_bot.handlers.AsyncSessionLocal",
-            return_value=FakeSessionContext(),
-        ), patch(
             "arbitrage_bot.tg_bot.handlers.set_user_preference",
             new=AsyncMock(
                 return_value={
@@ -583,6 +580,7 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(),
         ):
             await _apply_setting_update(
+                None,
                 message,
                 "min_roi_percent",
                 1.5,
@@ -610,9 +608,6 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "arbitrage_bot.tg_bot.handlers.AsyncSessionLocal",
-            return_value=FakeSessionContext(),
-        ), patch(
             "arbitrage_bot.tg_bot.handlers.set_user_preference",
             new=AsyncMock(
                 return_value={
@@ -628,6 +623,7 @@ class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(),
         ):
             await _apply_setting_update(
+                None,
                 message,
                 "min_roi_percent",
                 1.5,
@@ -803,7 +799,7 @@ class TelegramAlertDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with patch("arbitrage_bot.tg_bot.bot._get_delivery_bot", return_value=bot), patch(
             "arbitrage_bot.tg_bot.bot.get_redis",
             return_value=redis,
-        ):
+        ) as redis_mock:
             sent = await send_alert_immediately(
                 alert,
                 opportunity,
@@ -848,7 +844,7 @@ class TelegramAlertDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with patch("arbitrage_bot.tg_bot.bot._get_delivery_bot", return_value=bot), patch(
             "arbitrage_bot.tg_bot.bot.get_redis",
             return_value=redis,
-        ):
+        ) as redis_mock:
             sent = await send_alert_immediately(
                 alert,
                 opportunity,
@@ -890,7 +886,7 @@ class TelegramAlertDeliveryTests(unittest.IsolatedAsyncioTestCase):
         with patch("arbitrage_bot.tg_bot.bot._get_delivery_bot", return_value=bot), patch(
             "arbitrage_bot.tg_bot.bot.get_redis",
             return_value=redis,
-        ):
+        ) as redis_mock:
             sent = await send_alert_immediately(
                 alert,
                 opportunity,

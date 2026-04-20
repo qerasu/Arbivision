@@ -7,13 +7,14 @@ except ModuleNotFoundError:
 
 
 TARGET_BRANCH = "main"
+GIT_TIMEOUT_SECONDS = 60
 
 
 def _run(cmd):
     print(f"running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=repo_root(), text=True)
+    result = subprocess.run(cmd, cwd=repo_root(), text=True, timeout=GIT_TIMEOUT_SECONDS)
     if result.returncode != 0:
-        raise SystemExit(result.returncode)
+        raise RuntimeError(f"command failed with code {result.returncode}: {' '.join(cmd)}")
     return result
 
 
@@ -23,12 +24,13 @@ def _capture(cmd):
         cwd=repo_root(),
         text=True,
         capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if stderr:
             print(stderr)
-        raise SystemExit(result.returncode)
+        raise RuntimeError(f"command failed with code {result.returncode}: {' '.join(cmd)}")
     return result.stdout.strip()
 
 

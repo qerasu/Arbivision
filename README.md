@@ -136,6 +136,8 @@ python3 utilities/stop.py
 - сравнивает локальный `HEAD` с `origin/main`
 - если коммиты совпадают, завершает работу без изменений
 - если есть новый коммит, выполняет `git pull --ff-only origin main`
+- все git-команды выполняются с `timeout=60s`; при зависании сети процесс не блокируется навсегда
+- при ошибке выбрасывается `RuntimeError`, а не `SystemExit`, что безопасно при вызове из другого модуля
 
 `auto_update.py` не вызывает `utilities/stop.py` и `utilities/start.py`. При обычном запуске через `utilities/start.py` код подхватывает `uvicorn --reload`, поэтому отдельный рестарт из автообновления не нужен и может привести к двум экземплярам Telegram polling.
 
@@ -256,6 +258,7 @@ python3 -m arbitrage_bot.run_telegram
 - отдельные лимиты баланса на `Polymarket` и `Predict.Fun`
 - ввод числовых значений следующим сообщением
 - выключение числового фильтра через `off` / `выкл`
+- сброс всех фильтров в `None` через кнопку «Disable all» / «Отключить всё»
 - админский экран статистики для чатов из `TELEGRAM_SYSTEM_ERROR_CHAT_IDS`
 
 Новые Telegram-пользователи по умолчанию получают фильтры:
@@ -266,6 +269,8 @@ python3 -m arbitrage_bot.run_telegram
 - `max market end = 15 days`
 
 Выбранный язык сохраняется в `UserPreference.language` и применяется ко всем сообщениям и кнопкам. Локализация реализована в `arbitrage_bot/tg_bot/localization.py` через функцию `translate(language, en_text, ru_text)`.
+
+Настройки пользователя защищены whitelist-ом допустимых полей (`ALLOWED_PREFERENCE_FIELDS`). Callback data с неизвестным `field_name` игнорируется на уровне хэндлера, а `set_user_preference` выбрасывает `ValueError` для полей не из whitelist.
 
 Кнопка `Stats` открывает Telegram-сводку по пользователям, runtime-алертам и причинам fanout/drop. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
 
@@ -319,10 +324,11 @@ python3 -m unittest tests.test_worker_pairs tests.test_alert_manager tests.test_
 
 ## Примечания
 
-- `.env` загружается из `~/.config/arbivision/.env`
+- `.env` загружается из `~/.config/arbivision/.env`; если файл не найден, выбрасывается `FileNotFoundError` с указанием пути
 - `main.py` поднимает API и фоновые рантаймы через FastAPI lifespan
 - `api_app.py` нужен, когда хочется запустить только HTTP API без worker и Telegram
-- Redis используется для dedupe и служебных кешей
+- Redis используется для dedupe и служебных кешей; `get_redis()` — синхронная функция, возвращающая глобальный пул соединений
 - при недоступном Redis часть dedupe/cache логики деградирует мягко, без обязательного падения всего сервиса
+- `TELEGRAM_DEFAULT_CHAT_IDS` и `TELEGRAM_SYSTEM_ERROR_CHAT_IDS` хранятся как `frozenset` для O(1) membership check
 - язык пользователя хранится в `user_preferences.language` и применяется ко всем текстам и кнопкам бота
 - `database_url` экранирует user/password через `urllib.parse.quote_plus`, поэтому спецсимволы в пароле безопасны
