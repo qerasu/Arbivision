@@ -152,6 +152,7 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
         service.predict_fun.fetch_orderbook = AsyncMock(
             side_effect=httpx.HTTPStatusError("not found", request=request, response=response)
         )
+        service.polymarket.fetch_books = AsyncMock(return_value=[])
         service.polymarket.close = AsyncMock()
         service.predict_fun.close = AsyncMock()
 
@@ -184,6 +185,7 @@ class OrderbookServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_predict_fun_fetch_failure_counts_pair_drop_reason(self):
         service = OrderbookService()
         service.predict_fun.fetch_orderbook = AsyncMock(side_effect=RuntimeError("timeout"))
+        service.polymarket.fetch_books = AsyncMock(return_value=[])
 
         pair = SimpleNamespace(
             id=9,

@@ -34,13 +34,14 @@ class WorkerPairLifecycleTests(unittest.TestCase):
             outcome_mapping_json={"market_a": {"yes": "new-y", "no": "new-n"}},
         )
 
-        new_pairs, has_updates = _reconcile_market_pairs(
+        new_pairs, has_updates, hot_pair_hashes = _reconcile_market_pairs(
             [existing_pair],
             {"pair-1": matched_pair},
         )
 
         self.assertEqual(new_pairs, [])
         self.assertTrue(has_updates)
+        self.assertEqual(hot_pair_hashes, {"pair-1"})
         self.assertEqual(existing_pair.status, "approved")
         self.assertEqual(existing_pair.match_score, 0.91)
         self.assertEqual(existing_pair.match_reason_json, {"old": False})
@@ -56,10 +57,11 @@ class WorkerPairLifecycleTests(unittest.TestCase):
             outcome_mapping_json={"market_a": {"yes": "old-y", "no": "old-n"}},
         )
 
-        new_pairs, has_updates = _reconcile_market_pairs([existing_pair], {})
+        new_pairs, has_updates, hot_pair_hashes = _reconcile_market_pairs([existing_pair], {})
 
         self.assertEqual(new_pairs, [])
         self.assertTrue(has_updates)
+        self.assertEqual(hot_pair_hashes, set())
         self.assertEqual(existing_pair.status, "stale")
 
 
@@ -72,10 +74,11 @@ class WorkerPairLifecycleTests(unittest.TestCase):
             outcome_mapping_json={"market_a": {"yes": "poly-y", "no": "poly-n"}},
         )
 
-        new_pairs, has_updates = _reconcile_market_pairs([], {"pair-2": matched_pair})
+        new_pairs, has_updates, hot_pair_hashes = _reconcile_market_pairs([], {"pair-2": matched_pair})
 
         self.assertEqual(new_pairs, [matched_pair])
         self.assertFalse(has_updates)
+        self.assertEqual(hot_pair_hashes, {"pair-2"})
 
 
     def test_limit_active_pairs_for_cycle_prioritizes_closest_market_end(self):
@@ -125,6 +128,44 @@ class WorkerPairLifecycleTests(unittest.TestCase):
 
         self.assertEqual([pair.pair_hash for pair in first], ["pair-a", "pair-b"])
         self.assertEqual([pair.pair_hash for pair in second], ["pair-c", "pair-a"])
+
+
+    def test_select_active_pairs_for_cycle_prioritizes_hot_pairs_before_rotation(self):
+        pair_a = SimpleNamespace(id=1, pair_hash="pair-a", market_id_a=10, market_id_b=20)
+        pair_b = SimpleNamespace(id=2, pair_hash="pair-b", market_id_a=30, market_id_b=40)
+        pair_c = SimpleNamespace(id=3, pair_hash="pair-c", market_id_a=50, market_id_b=60)
+        market_map = {
+            10: SimpleNamespace(raw_payload_json={}),
+            20: SimpleNamespace(raw_payload_json={}),
+            30: SimpleNamespace(raw_payload_json={}),
+            40: SimpleNamespace(raw_payload_json={}),
+            50: SimpleNamespace(raw_payload_json={}),
+            60: SimpleNamespace(raw_payload_json={}),
+        }
+        worker_module._queue_hot_pairs(self.state, {"pair-c"})
+
+        with patch.object(worker_module.settings, "MAX_ACTIVE_PAIRS_PER_CYCLE", 2):
+            selected = worker_module._select_active_pairs_for_cycle(
+                [pair_a, pair_b, pair_c],
+                market_map,
+                self.state,
+            )
+
+        self.assertEqual([pair.pair_hash for pair in selected], ["pair-c", "pair-a"])
+
+
+    def test_mark_hot_pairs_processed_removes_selected_hashes(self):
+        self.state.hot_pair_hashes = ["pair-a", "pair-b", "pair-c"]
+
+        worker_module._mark_hot_pairs_processed(
+            self.state,
+            [
+                SimpleNamespace(pair_hash="pair-a"),
+                SimpleNamespace(pair_hash="pair-c"),
+            ],
+        )
+
+        self.assertEqual(self.state.hot_pair_hashes, ["pair-b"])
 
 
     def test_mark_stale_pairs_changes_only_active_statuses(self):
@@ -1422,7 +1463,7 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deliverable_opportunities"], 1)
         fanout_manager.get_delivery_targets.assert_awaited_once()
         self.assertEqual(fanout_manager.create_alert_deliveries.await_count, 2)
-        self.assertEqual(alert_manager.finalize_opportunity.await_count, 2)
+        self.assertEqual(alert_manager.finalize_opportunity.await_count, 1)
         send_mock.assert_awaited_once()
 
 
@@ -1536,7 +1577,7 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["opportunities"], 2)
         self.assertEqual(result["deliverable_opportunities"], 0)
         self.assertEqual(alert_manager.process_opportunity.await_count, 2)
-        self.assertEqual(alert_manager.finalize_opportunity.await_count, 2)
+        self.assertEqual(alert_manager.finalize_opportunity.await_count, 0)
         self.assertEqual(fanout_manager.create_alert_deliveries.await_count, 2)
         send_mock.assert_not_awaited()
 
@@ -1641,7 +1682,7 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send_mock.await_count, 1)
 
 
-    async def test_process_candidates_uses_batched_orderbook_fetch(self):
+    async def test_process_candidates_fetches_orderbooks_per_pair(self):
         class FakeScalarResult:
             def __init__(self, items):
                 self.items = items
@@ -1657,19 +1698,28 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeDb:
             async def execute(self, stmt):
-                return FakeScalarResult([SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20)])
+                return FakeScalarResult(
+                    [
+                        SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+                        SimpleNamespace(id=2, pair_hash="pair-2", market_id_a=30, market_id_b=40),
+                    ]
+                )
 
 
         fake_db = FakeDb()
+
+        async def fetch_orderbooks(pairs, *_args, **_kwargs):
+            pair = pairs[0]
+            return [
+                {
+                    "pair": pair,
+                    "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.5, 2)]}},
+                }
+            ]
+
+
         orderbook_service = SimpleNamespace(
-            fetch_orderbooks_for_pairs=AsyncMock(
-                return_value=[
-                    {
-                        "pair": SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
-                        "directions": {"A_yes_B_no": {"poly": [(0.4, 2)], "pf": [(0.5, 2)]}},
-                    }
-                ]
-            ),
+            fetch_orderbooks_for_pairs=AsyncMock(side_effect=fetch_orderbooks),
         )
         calculator = SimpleNamespace(calculate_opportunities=Mock(return_value=[]))
         alert_manager = SimpleNamespace(
@@ -1683,11 +1733,14 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("arbitrage_bot.worker._filter_skippable_pairs", new=AsyncMock(return_value=[
             SimpleNamespace(id=1, pair_hash="pair-1", market_id_a=10, market_id_b=20),
+            SimpleNamespace(id=2, pair_hash="pair-2", market_id_a=30, market_id_b=40),
         ])), patch(
             "arbitrage_bot.worker._load_market_map_for_pairs",
             new=AsyncMock(return_value={
                 10: SimpleNamespace(id=10, platform="polymarket", platform_market_id="poly-10"),
                 20: SimpleNamespace(id=20, platform="predict_fun", platform_market_id="pf-20"),
+                30: SimpleNamespace(id=30, platform="polymarket", platform_market_id="poly-30"),
+                40: SimpleNamespace(id=40, platform="predict_fun", platform_market_id="pf-40"),
             }),
         ), patch(
             "arbitrage_bot.worker._update_empty_counts",
@@ -1695,4 +1748,10 @@ class WorkerEmptyOrderbookStateTests(unittest.IsolatedAsyncioTestCase):
         ):
             await _process_candidates(fake_db, orderbook_service, calculator, alert_manager, fanout_manager, self.state)
 
-        orderbook_service.fetch_orderbooks_for_pairs.assert_awaited_once()
+        self.assertEqual(
+            [
+                call.args[0][0].pair_hash
+                for call in orderbook_service.fetch_orderbooks_for_pairs.await_args_list
+            ],
+            ["pair-1", "pair-2"],
+        )

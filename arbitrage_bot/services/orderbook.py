@@ -59,10 +59,66 @@ class OrderbookService:
         if not prepared_pairs:
             return []
 
+        if len(prepared_pairs) == 1:
+            pf_task = asyncio.create_task(
+                self._fetch_predict_fun_orderbooks(
+                    prepared_pairs,
+                    bypass_cache=bypass_cache,
+                )
+            )
+            polymarket_task = asyncio.create_task(
+                self._fetch_polymarket_books(
+                    prepared_pairs,
+                    bypass_cache=bypass_cache,
+                )
+            )
+            pf_orderbooks, pf_drop_reasons = await pf_task
+            prepared_pairs = self._retain_pairs_with_predict_fun_orderbooks(
+                prepared_pairs,
+                pf_orderbooks,
+                pf_drop_reasons,
+            )
+            if not prepared_pairs:
+                if not polymarket_task.done():
+                    polymarket_task.cancel()
+                await asyncio.gather(polymarket_task, return_exceptions=True)
+                return []
+
+            polymarket_books = await polymarket_task
+            return self._build_orderbook_results(
+                prepared_pairs,
+                pf_orderbooks,
+                pf_drop_reasons,
+                polymarket_books,
+                prepared_pairs_retained=True,
+            )
+
         pf_orderbooks, pf_drop_reasons = await self._fetch_predict_fun_orderbooks(
             prepared_pairs,
             bypass_cache=bypass_cache,
         )
+        prepared_pairs = self._retain_pairs_with_predict_fun_orderbooks(
+            prepared_pairs,
+            pf_orderbooks,
+            pf_drop_reasons,
+        )
+        if not prepared_pairs:
+            return []
+
+        polymarket_books = await self._fetch_polymarket_books(
+            prepared_pairs,
+            bypass_cache=bypass_cache,
+        )
+        return self._build_orderbook_results(
+            prepared_pairs,
+            pf_orderbooks,
+            pf_drop_reasons,
+            polymarket_books,
+            prepared_pairs_retained=True,
+        )
+
+
+    def _retain_pairs_with_predict_fun_orderbooks(self, prepared_pairs, pf_orderbooks, pf_drop_reasons):
         retained_pairs = []
         for item in prepared_pairs:
             pf_market_id = item["pf_market_id"]
@@ -72,14 +128,16 @@ class OrderbookService:
             drop_reason = pf_drop_reasons.get(pf_market_id)
             if drop_reason:
                 incr_counter(f"orderbook.drop.{drop_reason}")
-        prepared_pairs = retained_pairs
-        if not prepared_pairs:
-            return []
+        return retained_pairs
 
-        polymarket_books = await self._fetch_polymarket_books(
-            prepared_pairs,
-            bypass_cache=bypass_cache,
-        )
+
+    def _build_orderbook_results(self, prepared_pairs, pf_orderbooks, pf_drop_reasons, polymarket_books, prepared_pairs_retained=False):
+        if not prepared_pairs_retained:
+            prepared_pairs = self._retain_pairs_with_predict_fun_orderbooks(
+                prepared_pairs,
+                pf_orderbooks,
+                pf_drop_reasons,
+            )
         results = []
 
         for item in prepared_pairs:

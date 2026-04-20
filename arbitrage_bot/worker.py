@@ -38,6 +38,7 @@ _EMPTY_COUNT_TTL_SECONDS = max(settings.MARKET_REFRESH_SECONDS * 20, 3600)
 class WorkerState:
     pair_empty_counts: dict = field(default_factory=dict)
     market_signature_cache: dict = field(default_factory=dict)
+    hot_pair_hashes: list = field(default_factory=list)
     candidate_context_loaded: bool = False
     candidate_pairs: list = field(default_factory=list)
     candidate_market_map: dict = field(default_factory=dict)
@@ -115,18 +116,20 @@ async def _run_cycle(db, state):
         sync_result = await ingestion.sync_markets()
         if _should_run_full_pair_rematch(time.monotonic(), state):
             _invalidate_candidate_context_cache(state)
-            await _upsert_market_pairs(db, matcher, None, state)
+            hot_pair_hashes = await _upsert_market_pairs(db, matcher, None, state)
+            _queue_hot_pairs(state, hot_pair_hashes)
             _mark_full_pair_rematch_completed(state)
         else:
             changed_market_ids_by_platform = _extract_changed_market_ids_by_platform(sync_result)
             if _has_changed_market_ids(changed_market_ids_by_platform):
                 _invalidate_candidate_context_cache(state)
-                await _upsert_market_pairs(
+                hot_pair_hashes = await _upsert_market_pairs(
                     db,
                     matcher,
                     changed_market_ids_by_platform,
                     state,
                 )
+                _queue_hot_pairs(state, hot_pair_hashes)
         cycle_stats = await _process_candidates(
             db,
             orderbook_service,
@@ -326,7 +329,7 @@ async def _upsert_market_pairs(db, matcher, changed_market_ids_by_platform, stat
         changed_pf_ids = set(changed_market_ids_by_platform.get("predict_fun") or [])
         changed_market_ids = changed_poly_ids.union(changed_pf_ids)
         if not changed_market_ids:
-            return
+            return set()
 
     poly_markets, pf_markets = await _load_active_markets_by_platform(db)
     active_market_ids = {
@@ -383,13 +386,13 @@ async def _upsert_market_pairs(db, matcher, changed_market_ids_by_platform, stat
         existing_pairs = await _load_active_pairs(db)
     else:
         existing_pairs = await _load_pairs_for_market_ids(db, changed_market_ids)
-    new_pairs, has_updates = _reconcile_market_pairs(existing_pairs, matched_pairs)
+    new_pairs, has_updates, hot_pair_hashes = _reconcile_market_pairs(existing_pairs, matched_pairs)
     if has_updates:
         stale_pairs = [pair for pair in existing_pairs if pair.status == "stale"]
         await _clear_empty_counts_for_pairs(stale_pairs, state)
     if not new_pairs and not has_updates:
         _prune_market_signature_cache(state, active_market_ids)
-        return
+        return hot_pair_hashes
 
     if new_pairs:
         db.add_all(new_pairs)
@@ -398,8 +401,10 @@ async def _upsert_market_pairs(db, matcher, changed_market_ids_by_platform, stat
         await db.commit()
     except IntegrityError:
         await db.rollback()
+        hot_pair_hashes = set()
 
     _prune_market_signature_cache(state, active_market_ids)
+    return hot_pair_hashes
 
 
 async def _load_active_markets_by_platform(db):
@@ -508,20 +513,23 @@ def _reconcile_market_pairs(existing_pairs, matched_pairs_by_hash):
     existing_by_hash = {pair.pair_hash: pair for pair in existing_pairs}
     new_pairs = []
     has_updates = False
+    hot_pair_hashes = set()
 
     for pair_hash, matched_pair in matched_pairs_by_hash.items():
         existing_pair = existing_by_hash.pop(pair_hash, None)
         if existing_pair is None:
             new_pairs.append(matched_pair)
+            hot_pair_hashes.add(pair_hash)
             continue
 
         if _refresh_existing_pair(existing_pair, matched_pair):
             has_updates = True
+            hot_pair_hashes.add(pair_hash)
 
     if _mark_stale_pairs(existing_by_hash.values()):
         has_updates = True
 
-    return new_pairs, has_updates
+    return new_pairs, has_updates, hot_pair_hashes
 
 
 def _refresh_existing_pair(existing_pair, matched_pair):
@@ -558,6 +566,75 @@ def _mark_stale_pairs(pairs):
     return changed
 
 
+def _queue_hot_pairs(state, pair_hashes):
+    if not pair_hashes:
+        return
+
+    queued = [
+        pair_hash
+        for pair_hash in state.hot_pair_hashes
+        if pair_hash not in pair_hashes
+    ]
+    queued.extend(pair_hash for pair_hash in pair_hashes if pair_hash)
+    max_size = max(1, int(settings.HOT_PAIR_QUEUE_MAX_SIZE or 1))
+    state.hot_pair_hashes = queued[-max_size:]
+    incr_counter("worker.hot_pairs_queued", len(pair_hashes))
+
+
+def _select_active_pairs_for_cycle(pairs, market_map, state):
+    pair_limit = int(settings.MAX_ACTIVE_PAIRS_PER_CYCLE or 0)
+    if not pairs:
+        return []
+
+    pair_by_hash = {pair.pair_hash: pair for pair in pairs}
+    hot_pairs = [
+        pair_by_hash[pair_hash]
+        for pair_hash in state.hot_pair_hashes
+        if pair_hash in pair_by_hash
+    ]
+    hot_hashes = {pair.pair_hash for pair in hot_pairs}
+    regular_pairs = [
+        pair
+        for pair in pairs
+        if pair.pair_hash not in hot_hashes
+    ]
+
+    if pair_limit > 0:
+        hot_pairs = hot_pairs[:pair_limit]
+        remaining_limit = pair_limit - len(hot_pairs)
+        regular_pairs = _limit_active_pairs_for_cycle(
+            regular_pairs,
+            market_map,
+            state,
+            pair_limit=remaining_limit,
+        )
+    else:
+        regular_pairs = _limit_active_pairs_for_cycle(regular_pairs, market_map, state)
+
+    selected_pairs = hot_pairs + regular_pairs
+    if hot_pairs:
+        incr_counter("worker.hot_pairs_selected", len(hot_pairs))
+    return selected_pairs
+
+
+def _mark_hot_pairs_processed(state, pairs):
+    if not state.hot_pair_hashes or not pairs:
+        return
+
+    processed_hashes = {pair.pair_hash for pair in pairs}
+    state.hot_pair_hashes = [
+        pair_hash
+        for pair_hash in state.hot_pair_hashes
+        if pair_hash not in processed_hashes
+    ]
+
+
+def _record_timing(metric_name, started_at):
+    elapsed_ms = max(0, int((time.monotonic() - started_at) * 1000))
+    incr_counter(f"{metric_name}_ms_total", elapsed_ms)
+    incr_counter(f"{metric_name}_count")
+
+
 async def _process_candidates(db, orderbook_service, calculator, alert_manager, fanout_manager, state):
     pairs, market_map = await _load_candidate_context(db, state)
     if not pairs:
@@ -571,7 +648,7 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
         }
 
     active_pairs = await _filter_skippable_pairs(pairs, state)
-    active_pairs = _limit_active_pairs_for_cycle(active_pairs, market_map, state)
+    active_pairs = _select_active_pairs_for_cycle(active_pairs, market_map, state)
     incr_counter("worker.active_pairs_loaded", len(active_pairs))
     if not active_pairs:
         return {
@@ -583,85 +660,142 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
             "deliverable_opportunities": 0,
         }
 
-    orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs(
-        active_pairs,
-        db,
-        market_map=market_map,
-    )
-    pairs_with_data = {item["pair"].pair_hash for item in orderbooks_data}
-    await _update_empty_counts(active_pairs, pairs_with_data, state)
-    pairs_with_books_count = 0
-    opportunity_count = 0
-    deliverable_opportunity_count = 0
     delivery_targets = await fanout_manager.get_delivery_targets()
+    pair_fetch_concurrency = max(1, int(settings.ORDERBOOK_PREDICT_FUN_CONCURRENCY or 1))
+    semaphore = asyncio.Semaphore(pair_fetch_concurrency)
+    rollback_lock = asyncio.Lock()
+
+    async def process_pair(pair):
+        queued_at = time.monotonic()
+        async with semaphore:
+            _record_timing("worker.timing.pair_queue_wait", queued_at)
+            return await _process_candidate_pair(
+                db,
+                orderbook_service,
+                calculator,
+                alert_manager,
+                fanout_manager,
+                pair,
+                market_map,
+                delivery_targets,
+                rollback_lock,
+            )
+
+    pair_results = await asyncio.gather(
+        *(process_pair(pair) for pair in active_pairs),
+    )
+    _mark_hot_pairs_processed(state, active_pairs)
+    pairs_with_data = {
+        result["pair_hash"]
+        for result in pair_results
+        if result["has_orderbooks"]
+    }
+    await _update_empty_counts(active_pairs, pairs_with_data, state)
+
+    return {
+        "approved_pairs": len(pairs),
+        "active_pairs": len(active_pairs),
+        "pairs_with_books": sum(1 for result in pair_results if result["has_orderbooks"]),
+        "skipped_pairs": max(0, len(active_pairs) - len(pairs_with_data)),
+        "opportunities": sum(result["opportunities"] for result in pair_results),
+        "deliverable_opportunities": sum(result["deliverable_opportunities"] for result in pair_results),
+    }
+
+
+async def _process_candidate_pair(
+    db,
+    orderbook_service,
+    calculator,
+    alert_manager,
+    fanout_manager,
+    pair,
+    market_map,
+    delivery_targets,
+    rollback_lock,
+):
+    pair_stats = {
+        "pair_hash": pair.pair_hash,
+        "has_orderbooks": False,
+        "opportunities": 0,
+        "deliverable_opportunities": 0,
+    }
+    try:
+        orderbook_started_at = time.monotonic()
+        orderbooks_data = await orderbook_service.fetch_orderbooks_for_pairs(
+            [pair],
+            db,
+            market_map=market_map,
+        )
+        _record_timing("worker.timing.orderbook_fetch", orderbook_started_at)
+    except Exception as e:
+        _record_timing("worker.timing.orderbook_fetch", orderbook_started_at)
+        log.error(
+            "failed to fetch orderbook for pair",
+            pair_id=pair.id,
+            error=format_error_details(e),
+        )
+        incr_counter("worker.pair_orderbook_failed")
+        await send_system_error_notification("worker", f"fetch orderbook pair {pair.id}", e)
+        return pair_stats
+
     for item in orderbooks_data:
-        pair = item["pair"]
-        market_a = market_map.get(pair.market_id_a)
-        market_b = market_map.get(pair.market_id_b)
+        item_pair = item.get("pair") or pair
+        if getattr(item_pair, "pair_hash", None) != pair.pair_hash:
+            continue
+
+        market_a = market_map.get(item_pair.market_id_a)
+        market_b = market_map.get(item_pair.market_id_b)
         if market_a is None or market_b is None:
             continue
 
-        pairs_with_books_count += 1
+        pair_stats["has_orderbooks"] = True
         incr_counter("worker.pairs_with_orderbooks")
 
         directions = item.get("directions")
+        calculate_started_at = time.monotonic()
         calc_results = calculator.calculate_opportunities(directions)
+        _record_timing("worker.timing.calculate", calculate_started_at)
         if not calc_results:
             incr_counter("calculator.drop.no_profitable_directions")
             continue
         incr_counter("worker.calc_positive_spread", len(calc_results))
-        revalidated_directions, revalidated_results = await _revalidate_pair_opportunities(
-            db,
-            orderbook_service,
-            calculator,
-            pair,
-            market_map,
-        )
-        if revalidated_directions is None:
-            continue
 
         for calc_result in calc_results:
             try:
-                revalidated_calc_result = revalidated_results.get(calc_result.get("direction"))
-                if revalidated_calc_result is None:
-                    incr_counter("worker.opportunity_dropped_revalidation")
-                    continue
-
-                opportunity = await alert_manager.process_opportunity(pair, revalidated_calc_result)
+                opportunity = await alert_manager.process_opportunity(item_pair, calc_result)
                 if not opportunity:
                     continue
                 incr_counter("worker.opportunities_created")
+                fanout_started_at = time.monotonic()
                 deliveries = await fanout_manager.create_alert_deliveries(
                     opportunity,
                     market_a,
                     market_b,
                     delivery_targets=delivery_targets,
                     skip_existing_lookup=True,
-                    directions=revalidated_directions,
+                    directions=directions,
                     calculator=calculator,
                 )
+                _record_timing("worker.timing.fanout", fanout_started_at)
                 if deliveries:
-                    deliverable_opportunity_count += 1
-                await alert_manager.finalize_opportunity(opportunity)
-                if _should_send_immediately():
-                    for delivery in deliveries:
-                        sent = await send_alert_immediately(
-                            delivery["alert"],
-                            opportunity,
-                            pair,
-                            market_a,
-                            market_b,
-                            delivery["preferences"],
-                            revalidated_directions,
-                            calculator,
-                            prepared_opportunity=delivery.get("opportunity"),
-                        )
-                        if sent:
-                            incr_counter("worker.immediate_send_success")
-                        else:
-                            incr_counter("worker.immediate_send_failed")
+                    pair_stats["deliverable_opportunities"] += 1
+                sent_count = 0
+                if deliveries and _should_send_immediately():
+                    telegram_started_at = time.monotonic()
+                    sent_count = await _send_delivery_alerts(
+                        deliveries,
+                        opportunity,
+                        item_pair,
+                        market_a,
+                        market_b,
+                        directions,
+                        calculator,
+                    )
+                    _record_timing("worker.timing.telegram_send", telegram_started_at)
+                if sent_count > 0:
+                    await alert_manager.finalize_opportunity(opportunity)
                 incr_counter("worker.opportunity_processed")
-                opportunity_count += 1
+                pair_stats["opportunities"] += 1
             except Exception as e:
                 log.error(
                     "failed to process opportunity",
@@ -669,52 +803,43 @@ async def _process_candidates(db, orderbook_service, calculator, alert_manager, 
                     error=format_error_details(e),
                 )
                 incr_counter("worker.opportunity_failed")
-                try:
-                    await db.rollback()
-                except Exception:
-                    pass
+                async with rollback_lock:
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
                 await send_system_error_notification("worker", f"process opportunity pair {pair.id}", e)
 
-    return {
-        "approved_pairs": len(pairs),
-        "active_pairs": len(active_pairs),
-        "pairs_with_books": pairs_with_books_count,
-        "skipped_pairs": max(0, len(active_pairs) - pairs_with_books_count),
-        "opportunities": opportunity_count,
-        "deliverable_opportunities": deliverable_opportunity_count,
-    }
+    return pair_stats
 
 
-async def _revalidate_pair_opportunities(db, orderbook_service, calculator, pair, market_map):
-    fresh_orderbooks = await orderbook_service.fetch_orderbooks_for_pairs(
-        [pair],
-        db,
-        market_map=market_map,
-        bypass_cache=True,
+async def _send_delivery_alerts(deliveries, opportunity, pair, market_a, market_b, directions, calculator):
+    send_concurrency = max(1, int(settings.TELEGRAM_SEND_CONCURRENCY or 1))
+    semaphore = asyncio.Semaphore(send_concurrency)
+
+    async def send_delivery(delivery):
+        async with semaphore:
+            sent = await send_alert_immediately(
+                delivery["alert"],
+                opportunity,
+                pair,
+                market_a,
+                market_b,
+                delivery["preferences"],
+                directions,
+                calculator,
+                prepared_opportunity=delivery.get("opportunity"),
+            )
+            if sent:
+                incr_counter("worker.immediate_send_success")
+                return 1
+            incr_counter("worker.immediate_send_failed")
+            return 0
+
+    send_results = await asyncio.gather(
+        *(send_delivery(delivery) for delivery in deliveries),
     )
-    if not fresh_orderbooks:
-        incr_counter("worker.revalidation_missing_orderbooks")
-        return None, {}
-
-    directions = fresh_orderbooks[0].get("directions")
-    if not directions:
-        incr_counter("worker.revalidation_missing_directions")
-        return None, {}
-
-    calc_results = calculator.calculate_opportunities(directions)
-    if not calc_results:
-        incr_counter("worker.revalidation_no_profitable_directions")
-        return directions, {}
-
-    incr_counter("worker.revalidation_positive_spread", len(calc_results))
-    results_by_direction = {}
-    for result in calc_results:
-        direction = result.get("direction")
-        if not direction:
-            continue
-        results_by_direction[direction] = result
-
-    return directions, results_by_direction
+    return sum(send_results)
 
 
 def _pair_empty_count_key(pair_hash):
@@ -888,8 +1013,9 @@ def _should_send_immediately():
     return settings.APP_RUNTIME_MODE in {"all", "worker"}
 
 
-def _limit_active_pairs_for_cycle(pairs, market_map, state):
-    pair_limit = int(settings.MAX_ACTIVE_PAIRS_PER_CYCLE or 0)
+def _limit_active_pairs_for_cycle(pairs, market_map, state, pair_limit=None):
+    if pair_limit is None:
+        pair_limit = int(settings.MAX_ACTIVE_PAIRS_PER_CYCLE or 0)
     if pair_limit <= 0 or len(pairs) <= pair_limit:
         return list(pairs)
 
