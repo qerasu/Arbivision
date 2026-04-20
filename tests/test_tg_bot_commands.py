@@ -121,10 +121,10 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("• 🗑 Dropped: 4", text)
         self.assertIn("🧾 Alert cancellations/failures:", text)
         self.assertIn("• cancelled_after_revalidation: 3", text)
-        self.assertIn("⚙️ Delivery cancellations (since restart):", text)
+        self.assertIn("⚙️ Delivery cancellations (since restart ", text)
         self.assertIn("• cancelled_by_updated_preferences: 2", text)
         self.assertIn("• send_failed: 1", text)
-        self.assertIn("🧹 Fanout filter blocks (since restart):", text)
+        self.assertIn("🧹 Fanout filter blocks (since restart ", text)
         self.assertIn("• min_roi: 5", text)
 
 

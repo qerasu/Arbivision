@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.database import AsyncSessionLocal
+from arbitrage_bot.core.observability import get_started_at
 from arbitrage_bot.core.observability import snapshot_counters
 from arbitrage_bot.models.orm import Subscription
 from arbitrage_bot.models.orm import TelegramChat
@@ -526,6 +527,8 @@ async def _load_admin_stats(db_session):
 def _format_admin_stats_text(stats):
     users = stats["users"]
     alerts = stats["alerts"]
+    started_at = get_started_at()
+    restart_label = started_at.strftime("%Y-%m-%d %H:%M UTC")
 
     runtime_opportunity_filter_reasons = stats.get("runtime_opportunity_filter_reasons") or {}
     total_filtered = sum(runtime_opportunity_filter_reasons.values())
@@ -561,7 +564,7 @@ def _format_admin_stats_text(stats):
         lines.extend(
             [
                 "",
-                "⚙️ Delivery cancellations (since restart):",
+                f"⚙️ Delivery cancellations (since restart {restart_label}):",
             ]
         )
         for reason, count in runtime_alert_drop_reasons.items():
@@ -571,7 +574,7 @@ def _format_admin_stats_text(stats):
         lines.extend(
             [
                 "",
-                "🧹 Fanout filter blocks (since restart):",
+                f"🧹 Fanout filter blocks (since restart {restart_label}):",
             ]
         )
         for reason, count in runtime_opportunity_filter_reasons.items():
