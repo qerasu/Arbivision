@@ -294,7 +294,7 @@ python3 -m arbitrage_bot.run_telegram
 
 ## Тесты
 
-Основные тесты лежат в директории `tests/`.
+Тесты лежат в директории `tests/`.
 
 Запуск:
 
@@ -307,27 +307,6 @@ python3 utilities/run_tests.py
 ```bash
 RUN_LIVE_TESTS=1 RUN_LIVE_DB_TESTS=1 python3 utilities/run_tests.py
 ```
-
-Или через unittest:
-
-```bash
-python3 -m unittest discover -s tests
-```
-
-Для точечного прогона, например Telegram-команд:
-
-```bash
-python3 -m unittest tests.test_tg_bot_commands -v
-```
-
-Для актуального пайплайна особенно полезны:
-
-```bash
-python3 -m unittest tests.test_main_runtime -v
-python3 -m unittest tests.test_worker_pairs tests.test_alert_manager tests.test_fanout_manager tests.test_orderbook_service tests.test_ingestion_outcomes -v
-```
-
-Эти наборы покрывают маршрутизацию `APP_RUNTIME_MODE`, дедупликацию opportunities, инкрементальный rematch рынков, hot queue и orderbook fetch в worker.
 
 ## Примечания
 
