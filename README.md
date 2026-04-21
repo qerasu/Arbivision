@@ -170,7 +170,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\utilities\install_auto_upd
 schtasks /Query /TN "Arbivision Auto Update" /V /FO LIST
 ```
 
-Лог автообновления пишется в `logs/auto_update.log`. В нём должны быть строки `run auto_update.py`, `local HEAD`, `remote HEAD`, `no updates found` или `update completed`, а также `exit code: 0`.
+Лог автообновления пишется в `logs/auto_update.log`. В нём должны быть строки `run auto_update.py`, `local HEAD`, `remote HEAD`, `no updates found` или `update completed`, а также `exit code: 0`. Папки `logs/` и `tmp/` создаются локально для runtime-логов и lock-файла, поэтому они игнорируются Git.
 
 ## Альтернативные способы запуска
 
