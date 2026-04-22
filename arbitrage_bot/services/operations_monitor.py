@@ -21,8 +21,20 @@ _TELEGRAM_IGNORED_FAILURE_MARKERS = (
 )
 
 _duplicate_state = {}
-_orderbook_state = {"warning_streak": 0, "critical_streak": 0, "severity": None}
-_deliverable_state = {"streak": 0, "severity": None}
+_orderbook_state = {
+    "warning_streak": 0,
+    "critical_streak": 0,
+    "severity": None,
+    "active_pairs": 0,
+    "pairs_with_books": 0,
+    "ratio": None,
+}
+_deliverable_state = {
+    "streak": 0,
+    "severity": None,
+    "opportunities": 0,
+    "deliverable_opportunities": 0,
+}
 _telegram_state = {
     "first_failure_at": None,
     "last_failure_at": None,
@@ -37,12 +49,24 @@ def reset_monitor_state():
     _orderbook_state["warning_streak"] = 0
     _orderbook_state["critical_streak"] = 0
     _orderbook_state["severity"] = None
+    _orderbook_state["active_pairs"] = 0
+    _orderbook_state["pairs_with_books"] = 0
+    _orderbook_state["ratio"] = None
     _deliverable_state["streak"] = 0
     _deliverable_state["severity"] = None
+    _deliverable_state["opportunities"] = 0
+    _deliverable_state["deliverable_opportunities"] = 0
     _telegram_state["first_failure_at"] = None
     _telegram_state["last_failure_at"] = None
     _telegram_state["active"] = False
     _telegram_state["outage_detected"] = False
+
+
+def snapshot_monitor_state():
+    return {
+        "orderbook_coverage": dict(_orderbook_state),
+        "deliverable_opportunities": dict(_deliverable_state),
+    }
 
 
 def _log_duplicate_markets_event(source, details, level, rows, streak):
@@ -178,64 +202,53 @@ async def evaluate_telegram_connectivity(now=None):
 async def _record_orderbook_coverage(active_pairs, pairs_with_books):
     active = int(active_pairs or 0)
     with_books = int(pairs_with_books or 0)
+    _orderbook_state["active_pairs"] = active
+    _orderbook_state["pairs_with_books"] = with_books
+
     if active <= 0:
         _orderbook_state["warning_streak"] = 0
         _orderbook_state["critical_streak"] = 0
+        _orderbook_state["severity"] = None
+        _orderbook_state["ratio"] = None
         return
 
     ratio = with_books / active
+    _orderbook_state["ratio"] = ratio
     desired_severity = None
-    details = None
 
     if ratio < _ORDERBOOK_CRITICAL_RATIO:
         _orderbook_state["critical_streak"] += 1
         _orderbook_state["warning_streak"] += 1
         if _orderbook_state["critical_streak"] >= _ORDERBOOK_STREAK_CYCLES:
             desired_severity = "critical"
-            details = f"orderbook coverage degraded to {ratio:.1%} ({with_books}/{active})"
     elif ratio < _ORDERBOOK_WARNING_RATIO:
         _orderbook_state["warning_streak"] += 1
         _orderbook_state["critical_streak"] = 0
         if _orderbook_state["warning_streak"] >= _ORDERBOOK_STREAK_CYCLES:
             desired_severity = "warning"
-            details = f"orderbook coverage dropped to {ratio:.1%} ({with_books}/{active})"
     else:
         _orderbook_state["warning_streak"] = 0
         _orderbook_state["critical_streak"] = 0
 
     if desired_severity is None:
         if _orderbook_state["severity"] is not None and ratio >= _ORDERBOOK_WARNING_RATIO:
-            await send_system_notification(
-                "monitor",
-                "orderbook coverage",
-                f"orderbook coverage recovered to {ratio:.1%} ({with_books}/{active})",
-                level="recovery",
-            )
             _orderbook_state["severity"] = None
         return
 
     if _orderbook_state["severity"] != desired_severity:
-        await send_system_notification(
-            "monitor",
-            "orderbook coverage",
-            details,
-            level=desired_severity,
-        )
         _orderbook_state["severity"] = desired_severity
 
 
 async def _record_deliverable_stall(opportunities, deliverable_opportunities):
-    has_stall = int(opportunities or 0) > 0 and int(deliverable_opportunities or 0) == 0
+    opportunities_count = int(opportunities or 0)
+    deliverable_count = int(deliverable_opportunities or 0)
+    _deliverable_state["opportunities"] = opportunities_count
+    _deliverable_state["deliverable_opportunities"] = deliverable_count
+
+    has_stall = opportunities_count > 0 and deliverable_count == 0
     if has_stall:
         _deliverable_state["streak"] += 1
     else:
-        if _deliverable_state["severity"] is not None:
-            await send_system_notification(
-                "monitor",
-                "deliverable opportunities",
-                "deliverable opportunities recovered",
-                level="recovery",
-            )
         _deliverable_state["streak"] = 0
         _deliverable_state["severity"] = None
         return
@@ -250,15 +263,4 @@ async def _record_deliverable_stall(opportunities, deliverable_opportunities):
         return
 
     if _deliverable_state["severity"] != desired_severity:
-        await send_system_notification(
-            "monitor",
-            "deliverable opportunities",
-            (
-                "opportunities are being found but none are deliverable: "
-                f"opportunities={int(opportunities or 0)}, "
-                f"deliverable={int(deliverable_opportunities or 0)}, "
-                f"streak={_deliverable_state['streak']}"
-            ),
-            level=desired_severity,
-        )
         _deliverable_state["severity"] = desired_severity

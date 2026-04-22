@@ -10,16 +10,41 @@ from arbitrage_bot.tg_bot.preferences import get_telegram_alert_targets
 
 log = get_logger("fanout_manager")
 
+# глобальный кеш целей доставки — разделяется всеми экземплярами FanoutManager
+_delivery_targets_cache = None
+_delivery_targets_cache_expires_at = 0.0
+
 
 class FanoutManager:
-    _cache_value = None
-    _cache_expires_at = 0.0
+    # class-level aliases для совместимости с setUp в тестах
+    @property
+    def _cache_value(self):
+        return _delivery_targets_cache
+
+
+    @_cache_value.setter
+    def _cache_value(self, value):
+        global _delivery_targets_cache
+        _delivery_targets_cache = value
+
+
+    @property
+    def _cache_expires_at(self):
+        return _delivery_targets_cache_expires_at
+
+
+    @_cache_expires_at.setter
+    def _cache_expires_at(self, value):
+        global _delivery_targets_cache_expires_at
+        _delivery_targets_cache_expires_at = value
+
 
     def __init__(self, db_session):
         self.db = db_session
 
 
     async def process_pending_opportunities(self, limit=50):
+        # в in-memory режиме (один процесс) pending-очередь не используется
         return 0
 
 
@@ -100,17 +125,17 @@ class FanoutManager:
                 }
             )
             existing_chat_ids.add(chat_id)
-            incr_counter("fanout.alert_created")
             incr_counter("fanout.alerts_created")
 
         return deliveries
 
 
     async def _get_delivery_targets(self):
+        global _delivery_targets_cache, _delivery_targets_cache_expires_at
         now = time.monotonic()
-        if FanoutManager._cache_value is not None and FanoutManager._cache_expires_at > now:
+        if _delivery_targets_cache is not None and _delivery_targets_cache_expires_at > now:
             incr_counter("fanout.delivery_targets_cache_hit")
-            return FanoutManager._cache_value
+            return _delivery_targets_cache
         incr_counter("fanout.delivery_targets_cache_miss")
 
         targets = await get_telegram_alert_targets(self.db)
@@ -133,8 +158,9 @@ class FanoutManager:
 
 
     def _set_delivery_targets_cache(self, targets):
-        FanoutManager._cache_value = [dict(target) for target in targets]
-        FanoutManager._cache_expires_at = time.monotonic() + settings.FANOUT_TARGET_CACHE_TTL_SECONDS
+        global _delivery_targets_cache, _delivery_targets_cache_expires_at
+        _delivery_targets_cache = [dict(target) for target in targets]
+        _delivery_targets_cache_expires_at = time.monotonic() + settings.FANOUT_TARGET_CACHE_TTL_SECONDS
 
 
     def _filter_targets(self, opportunity, targets, market_a, market_b, directions=None, calculator=None):

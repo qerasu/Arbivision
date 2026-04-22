@@ -261,12 +261,12 @@ python3 -m arbitrage_bot.run_telegram
 
 - выбор языка интерфейса при первом запуске (English / Русский)
 - паузу и возобновление алертов
-- пользовательские фильтры через inline-кнопки: `min ROI`, `min capital`, `max capital`, `Polymarket balance`, `Predict.Fun balance`, `min profit`, `min market end`, `max market end`
+- пользовательские фильтры через inline-кнопки: `min ROI`, `min volume`, `max volume`, `Polymarket balance`, `Predict.Fun balance`, `min profit`, `min market end`, `max market end`
 - отдельные лимиты баланса на `Polymarket` и `Predict.Fun`
 - ввод числовых значений следующим сообщением
 - выключение числового фильтра через `off` / `выкл`
 - сброс всех фильтров в `None` через кнопку «Disable all» / «Отключить всё»
-- админский экран статистики для чатов из `TELEGRAM_SYSTEM_ERROR_CHAT_IDS`
+- отдельную команду `/stats` для админской статистики в чатах из `TELEGRAM_SYSTEM_ERROR_CHAT_IDS`
 
 Новые Telegram-пользователи по умолчанию получают фильтры:
 
@@ -279,7 +279,7 @@ python3 -m arbitrage_bot.run_telegram
 
 Настройки пользователя защищены whitelist-ом допустимых полей (`ALLOWED_PREFERENCE_FIELDS`). Callback data с неизвестным `field_name` игнорируется на уровне хэндлера, а `set_user_preference` выбрасывает `ValueError` для полей не из whitelist.
 
-Кнопка `Stats` открывает Telegram-сводку по пользователям, runtime-алертам и причинам fanout/drop. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
+Команда `/stats` открывает Telegram-сводку по пользователям, runtime-алертам, причинам fanout/drop и состоянию monitor-проверок `orderbook coverage` / `deliverable opportunities`. Она зарегистрирована в списке команд бота наравне с `/start`, но отдаёт данные только чатам из `TELEGRAM_SYSTEM_ERROR_CHAT_IDS`. Monitor-проверки `orderbook coverage` и `deliverable opportunities`, включая recovery, не отправляют отдельные Telegram-уведомления и доступны только в `/stats`. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
 
 ## HTTP API
 

@@ -472,25 +472,6 @@ def format_home_text(preferences, language=None):
     return header + f"\n\n{translate(lang, 'No active filters.', 'Нет активных фильтров.')}"
 
 
-def format_status_text(preferences, language=None):
-    lang = language or preferences.get("language")
-    muted = preferences.get("muted", False)
-    status_icon = "🔴" if muted else "🟢"
-    status_label = translate(lang, "Paused", "На паузе") if muted else translate(lang, "Active", "Активен")
-    alerts_line = (
-        translate(lang, "📭 Telegram alerts are paused.", "📭 Telegram-алерты поставлены на паузу.")
-        if muted
-        else translate(lang, "📬 Telegram alerts are enabled.", "📬 Telegram-алерты включены.")
-    )
-    return (
-        f"{translate(lang, '📡 Arbitrage Scanner', '📡 Сканер арбитража')}\n\n"
-        f"{translate(lang, 'Current bot status.', 'Текущий статус бота.')}\n\n"
-        f"{status_icon} {translate(lang, 'Status', 'Статус')}: {status_label}\n"
-        f"{translate(lang, '🔄 Monitoring is running in the background.', '🔄 Мониторинг работает в фоне.')}\n"
-        f"{alerts_line}"
-    )
-
-
 def format_setting_prompt(field_name, preferences, language=None):
     lang = language or preferences.get("language")
     label = get_setting_label(field_name, language=lang)
@@ -646,8 +627,6 @@ def _format_roi_value(preferences, language=None):
     if min_roi is None:
         return translate(language, "off", "выкл")
     return f"{float(min_roi):.2f}%"
-
-
 
 
 def _extract_platform_capitals(opportunity, market_a, market_b):

@@ -130,11 +130,15 @@ def _should_skip_notification(dedupe_key):
 
     _last_sent_at[dedupe_key] = now
 
-    # evict oldest entries when the dict grows too large
+    # сначала выгоняем записи с истёкшим TTL, затем — по старшинству если всё ещё много
     if len(_last_sent_at) > _MAX_DEDUPE_ENTRIES:
-        sorted_keys = sorted(_last_sent_at, key=_last_sent_at.get)
-        for stale_key in sorted_keys[:len(sorted_keys) // 2]:
-            _last_sent_at.pop(stale_key, None)
+        expired = [k for k, t in _last_sent_at.items() if now - t >= cooldown]
+        for k in expired:
+            _last_sent_at.pop(k, None)
+        if len(_last_sent_at) > _MAX_DEDUPE_ENTRIES:
+            sorted_keys = sorted(_last_sent_at, key=_last_sent_at.get)
+            for k in sorted_keys[:len(sorted_keys) // 2]:
+                _last_sent_at.pop(k, None)
     return False
 
 

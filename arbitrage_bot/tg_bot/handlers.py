@@ -10,6 +10,7 @@ from arbitrage_bot.core.config import settings
 from arbitrage_bot.core.database import AsyncSessionLocal
 from arbitrage_bot.core.observability import get_started_at
 from arbitrage_bot.core.observability import snapshot_counters
+from arbitrage_bot.services.operations_monitor import snapshot_monitor_state
 from arbitrage_bot.models.orm import Subscription
 from arbitrage_bot.models.orm import TelegramChat
 from arbitrage_bot.models.orm import User
@@ -53,6 +54,20 @@ async def cmd_start(message):
         reply_markup=_build_home_keyboard(preferences, chat_id=message.chat.id),
     )
 
+
+@router.message(Command("stats"))
+async def cmd_stats(message):
+    if not _is_admin_chat(message.chat.id):
+        await message.answer("Stats are available only for admin chats.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        stats = await _load_admin_stats(session)
+
+    await message.answer(
+        _format_admin_stats_text(stats),
+        reply_markup=_build_stats_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("tg_lang:"))
@@ -292,16 +307,6 @@ def _build_home_keyboard(preferences=None, chat_id=None):
         ],
     ]
 
-    if _is_admin_chat(chat_id):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="Stats",
-                    callback_data="tg_nav:stats",
-                ),
-            ]
-        )
-
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -521,6 +526,7 @@ async def _load_admin_stats(db_session):
         "alert_drop_reasons": [],
         "runtime_alert_drop_reasons": runtime_alert_drop_reasons,
         "runtime_opportunity_filter_reasons": runtime_opportunity_filter_reasons,
+        "monitor": snapshot_monitor_state(),
     }
 
 
@@ -534,7 +540,7 @@ def _format_admin_stats_text(stats):
     total_filtered = sum(runtime_opportunity_filter_reasons.values())
 
     lines = [
-        "📊 Bot stats, cd finally working",
+        "📊 Bot stats",
         "",
         "👥 Users:",
         f"• 🧮 Total: {users['total']}",
@@ -579,5 +585,30 @@ def _format_admin_stats_text(stats):
         )
         for reason, count in runtime_opportunity_filter_reasons.items():
             lines.append(f"• {reason}: {count}")
+
+    monitor = stats.get("monitor") or {}
+    if monitor:
+        lines.extend(["", "🩺 Monitor:"])
+        orderbook = monitor.get("orderbook_coverage") or {}
+        active_pairs = int(orderbook.get("active_pairs") or 0)
+        pairs_with_books = int(orderbook.get("pairs_with_books") or 0)
+        orderbook_severity = orderbook.get("severity") or "ok"
+        ratio = orderbook.get("ratio")
+        if ratio is None:
+            lines.append("• Orderbook coverage: ok, no active pairs")
+        else:
+            lines.append(
+                f"• Orderbook coverage: {orderbook_severity}, "
+                f"{float(ratio):.1%} ({pairs_with_books}/{active_pairs})"
+            )
+
+        deliverable = monitor.get("deliverable_opportunities") or {}
+        deliverable_severity = deliverable.get("severity") or "ok"
+        lines.append(
+            f"• Deliverable opportunities: {deliverable_severity}, "
+            f"opportunities={int(deliverable.get('opportunities') or 0)}, "
+            f"deliverable={int(deliverable.get('deliverable_opportunities') or 0)}, "
+            f"streak={int(deliverable.get('streak') or 0)}"
+        )
 
     return "\n".join(lines)

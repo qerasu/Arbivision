@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
-from sqlalchemy import Text, cast, func, or_
+from sqlalchemy import Text, cast, func, or_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
@@ -391,7 +391,7 @@ class IngestionService:
                     platform,
                     {item["platform_market_id"] for item in mapped_items},
                 ))
-            await self.db.commit()
+                await self.db.commit()
             self._changed_market_ids_by_platform.setdefault(platform, set()).update(changed_market_ids)
             return not is_partial
         except asyncio.CancelledError:
@@ -618,23 +618,29 @@ class IngestionService:
         if not platform:
             return set()
 
-        stmt = select(Market).where(
+        # загружаем только id и platform_market_id — без полных ORM-объектов
+        stmt = select(Market.id, Market.platform_market_id).where(
             Market.platform == platform,
             Market.status == "active",
         )
-        active_markets = (await self.db.execute(stmt)).scalars().all()
-        if not active_markets:
+        rows = (await self.db.execute(stmt)).all()
+        if not rows:
             return set()
 
-        closed_market_ids = set()
-        for market in active_markets:
-            if market.platform_market_id in seen_market_ids:
-                continue
-            market.status = "closed"
-            market.tradable = False
-            market.updated_at = datetime.now(timezone.utc)
-            market_id = getattr(market, "id", None)
-            if market_id is not None:
-                closed_market_ids.add(market_id)
+        to_close_ids = [
+            market_id
+            for market_id, platform_market_id in rows
+            if platform_market_id not in seen_market_ids
+        ]
+        if not to_close_ids:
+            return set()
 
-        return closed_market_ids
+        now = datetime.now(timezone.utc)
+        for chunk in self._chunked(to_close_ids, 1000):
+            await self.db.execute(
+                update(Market)
+                .where(Market.id.in_(chunk))
+                .values(status="closed", tradable=False, updated_at=now)
+            )
+
+        return set(to_close_ids)

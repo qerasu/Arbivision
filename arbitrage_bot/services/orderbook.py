@@ -285,7 +285,7 @@ class OrderbookService:
                 return cached_value, None
 
         if semaphore is None:
-            return await self._fetch_predict_fun_orderbook_uncached(market_id)
+            return await self._fetch_predict_fun_orderbook_uncached(market_id, bypass_cache=bypass_cache)
 
         async with semaphore:
             if not bypass_cache:
@@ -294,10 +294,10 @@ class OrderbookService:
                     return None, "predict_fun_market_not_found"
                 if cached_value is not None:
                     return cached_value, None
-            return await self._fetch_predict_fun_orderbook_uncached(market_id)
+            return await self._fetch_predict_fun_orderbook_uncached(market_id, bypass_cache=bypass_cache)
 
 
-    async def _fetch_predict_fun_orderbook_uncached(self, market_id):
+    async def _fetch_predict_fun_orderbook_uncached(self, market_id, bypass_cache=False):
         try:
             payload = await self.predict_fun.fetch_orderbook(market_id)
         except Exception as exc:
@@ -308,7 +308,8 @@ class OrderbookService:
                     market_id=market_id,
                 )
                 incr_counter("orderbook.fetch.predict_fun_market_not_found")
-                self._set_cache_value(_predict_fun_orderbook_cache, market_id, _CACHE_MISS)
+                if not bypass_cache:
+                    self._set_cache_value(_predict_fun_orderbook_cache, market_id, _CACHE_MISS)
                 return None, "predict_fun_market_not_found"
             log.debug(
                 "orderbook fetch failed",
@@ -319,7 +320,8 @@ class OrderbookService:
             incr_counter("orderbook.fetch.predict_fun_fetch_failed")
             return None, "predict_fun_fetch_failed"
 
-        self._set_cache_value(_predict_fun_orderbook_cache, market_id, payload)
+        if not bypass_cache:
+            self._set_cache_value(_predict_fun_orderbook_cache, market_id, payload)
         return payload, None
 
 
@@ -429,7 +431,9 @@ class OrderbookService:
                 book = fetched_by_token_id.get(token_id)
                 if book is None:
                     incr_counter("orderbook.polymarket_book_missing")
-                    self._set_cache_value(_polymarket_book_cache, token_id, _CACHE_MISS)
+                    if not bypass_cache:
+                        # не записываем CACHE_MISS при bypass — он может быть временным
+                        self._set_cache_value(_polymarket_book_cache, token_id, _CACHE_MISS)
                     continue
                 self._set_cache_value(_polymarket_book_cache, token_id, book)
                 books[token_id] = book

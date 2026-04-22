@@ -63,6 +63,7 @@ def _get_delivery_bot():
 def _build_bot_commands():
     return [
         BotCommand(command="start", description="open menu"),
+        BotCommand(command="stats", description="show stats"),
     ]
 
 
@@ -165,7 +166,7 @@ def _format_market_links(market_a, market_b):
         platform_label = "Polymarket" if market.platform == "polymarket" else "Predict.Fun"
         url = _build_market_url(market)
         if url:
-            parts.append(f'<a href="{url}">{platform_label}</a>')
+            parts.append(f'<a href="{html.escape(url)}">{platform_label}</a>')
         else:
             parts.append(platform_label)
 
@@ -593,6 +594,7 @@ def _apply_calc_result_to_opportunity(opportunity, calc_result):
     opportunity.gross_roi = calc_result["gross_roi"]
     opportunity.net_roi = calc_result["net_roi"]
     opportunity.calculation_json = calc_result
+
 
 def _build_runtime_preferences(preferences):
     values = default_preferences()

@@ -24,11 +24,11 @@ from arbitrage_bot.tg_bot.handlers import _build_settings_keyboard
 from arbitrage_bot.tg_bot.handlers import _apply_setting_update
 from arbitrage_bot.tg_bot.handlers import _format_admin_stats_text
 from arbitrage_bot.tg_bot.handlers import _load_admin_stats
+from arbitrage_bot.tg_bot.handlers import cmd_stats
 from arbitrage_bot.tg_bot.handlers import on_plain_text_setting
 from arbitrage_bot.tg_bot.handlers import _safe_answer_callback
 from arbitrage_bot.tg_bot.handlers import _safe_delete_message
 from arbitrage_bot.tg_bot.handlers import _safe_edit_text
-from arbitrage_bot.tg_bot.preferences import format_status_text
 from sqlalchemy.exc import ProgrammingError
 
 
@@ -82,7 +82,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertEqual(keyboard.inline_keyboard[1][0].text, "Настройки")
 
 
-    def test_build_home_keyboard_shows_stats_only_for_admin_chat(self):
+    def test_build_home_keyboard_does_not_show_stats_for_admin_chat(self):
         original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
         settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = frozenset({"123"})
         try:
@@ -90,7 +90,9 @@ class TelegramBotCommandsTests(unittest.TestCase):
         finally:
             settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = original_system_error_chat_ids
 
-        self.assertEqual(keyboard.inline_keyboard[2][0].text, "Stats")
+        self.assertEqual(len(keyboard.inline_keyboard), 2)
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, "⏸ Pause")
+        self.assertEqual(keyboard.inline_keyboard[1][0].text, "Settings")
 
 
     def test_format_admin_stats_text_contains_expected_sections(self):
@@ -107,6 +109,20 @@ class TelegramBotCommandsTests(unittest.TestCase):
                 },
                 "runtime_opportunity_filter_reasons": {
                     "min_roi": 5,
+                },
+                "monitor": {
+                    "orderbook_coverage": {
+                        "active_pairs": 20,
+                        "pairs_with_books": 7,
+                        "ratio": 0.35,
+                        "severity": "critical",
+                    },
+                    "deliverable_opportunities": {
+                        "opportunities": 1,
+                        "deliverable_opportunities": 0,
+                        "streak": 5,
+                        "severity": "warning",
+                    },
                 },
             }
         )
@@ -126,6 +142,9 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("• send_failed: 1", text)
         self.assertIn("🧹 Fanout filter blocks (since restart ", text)
         self.assertIn("• min_roi: 5", text)
+        self.assertIn("🩺 Monitor:", text)
+        self.assertIn("• Orderbook coverage: critical, 35.0% (7/20)", text)
+        self.assertIn("• Deliverable opportunities: warning, opportunities=1, deliverable=0, streak=5", text)
 
 
     def test_build_prompt_keyboard_contains_only_back_button(self):
@@ -136,11 +155,12 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertEqual(keyboard.inline_keyboard[0][0].text, "← Back")
 
 
-    def test_build_bot_commands_contains_start(self):
+    def test_build_bot_commands_contains_start_and_stats(self):
         commands = _build_bot_commands()
 
-        self.assertEqual(len(commands), 1)
+        self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0].command, "start")
+        self.assertEqual(commands[1].command, "stats")
 
 
     def test_is_missing_table_error_detects_undefined_table(self):
@@ -299,43 +319,6 @@ class TelegramBotCommandsTests(unittest.TestCase):
         url = _build_market_url(market)
 
         self.assertEqual(url, "https://predict.fun/market/epl-bre-eve-2026-04-11?ref=077A2")
-
-
-    def test_format_status_text_contains_status_summary(self):
-        text = format_status_text(
-            {
-                "min_roi_percent": None,
-                "min_capital_usd": None,
-                "max_capital_usd": None,
-                "max_polymarket_capital_usd": None,
-                "max_predict_fun_capital_usd": None,
-                "min_profit_usd": None,
-                "max_days_to_close": None,
-            }
-        )
-
-        self.assertIn("Current bot status.", text)
-        self.assertIn("🟢 Status: Active", text)
-        self.assertIn("📬 Telegram alerts are enabled.", text)
-        self.assertNotIn("Current filters:", text)
-
-
-    def test_format_status_text_shows_paused_when_muted(self):
-        text = format_status_text(
-            {
-                "min_roi_percent": None,
-                "min_capital_usd": None,
-                "max_capital_usd": None,
-                "max_polymarket_capital_usd": None,
-                "max_predict_fun_capital_usd": None,
-                "min_profit_usd": None,
-                "max_days_to_close": None,
-                "muted": True,
-            }
-        )
-
-        self.assertIn("🔴 Status: Paused", text)
-        self.assertIn("📭 Telegram alerts are paused.", text)
 
 
     def test_format_inactive_chat_text_prompts_start(self):
@@ -514,16 +497,78 @@ class FakeAdminStatsSession:
 
 
 class TelegramBotSettingsUpdateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cmd_stats_sends_stats_for_admin_chat(self):
+        message = AsyncMock()
+        message.chat.id = 123
+        original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
+        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = frozenset({"123"})
+        try:
+            with patch(
+                "arbitrage_bot.tg_bot.handlers.AsyncSessionLocal",
+                return_value=FakeSessionContext(),
+            ), patch(
+                "arbitrage_bot.tg_bot.handlers._load_admin_stats",
+                new=AsyncMock(
+                    return_value={
+                        "users": {"total": 1, "active": 1, "paused": 0},
+                        "alerts": {"sent": 2, "dropped": 0},
+                    }
+                ),
+            ) as stats_mock:
+                await cmd_stats(message)
+        finally:
+            settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = original_system_error_chat_ids
+
+        stats_mock.assert_awaited_once()
+        message.answer.assert_awaited_once()
+        self.assertIn("📊 Bot stats", message.answer.await_args.args[0])
+
+
+    async def test_cmd_stats_rejects_non_admin_chat(self):
+        message = AsyncMock()
+        message.chat.id = 456
+        original_system_error_chat_ids = settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS
+        settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = frozenset({"123"})
+        try:
+            with patch(
+                "arbitrage_bot.tg_bot.handlers._load_admin_stats",
+                new=AsyncMock(),
+            ) as stats_mock:
+                await cmd_stats(message)
+        finally:
+            settings.TELEGRAM_SYSTEM_ERROR_CHAT_IDS = original_system_error_chat_ids
+
+        stats_mock.assert_not_awaited()
+        message.answer.assert_awaited_once_with("Stats are available only for admin chats.")
+
+
     async def test_load_admin_stats_counts_registered_chats_from_telegram_chats(self):
         session = FakeAdminStatsSession()
 
         with patch(
             "arbitrage_bot.tg_bot.handlers.snapshot_counters",
             return_value={},
+        ), patch(
+            "arbitrage_bot.tg_bot.handlers.snapshot_monitor_state",
+            return_value={
+                "orderbook_coverage": {
+                    "active_pairs": 10,
+                    "pairs_with_books": 9,
+                    "ratio": 0.9,
+                    "severity": None,
+                },
+                "deliverable_opportunities": {
+                    "opportunities": 3,
+                    "deliverable_opportunities": 1,
+                    "streak": 0,
+                    "severity": None,
+                },
+            },
         ):
             stats = await _load_admin_stats(session)
 
         self.assertEqual(stats["users"]["total"], 1)
+        self.assertEqual(stats["monitor"]["orderbook_coverage"]["ratio"], 0.9)
         self.assertIn("FROM telegram_chats", session.compiled_statements[0])
         self.assertNotIn("FROM subscriptions", session.compiled_statements[0])
 

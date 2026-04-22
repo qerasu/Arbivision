@@ -89,8 +89,14 @@ class ArbitrageCalculator:
 
         avg_price_poly = cost_poly / shares
         avg_price_pf = cost_pf / shares
-        gross_profit = shares - capital
         net_roi = net_profit / capital if capital > 0 else 0.0
+
+        # gross — без учёта комиссий (fee — константный множитель, делим обратно)
+        gross_cost_poly = cost_poly / (1.0 + self.fee_poly)
+        gross_cost_pf = cost_pf / (1.0 + self.fee_pf)
+        gross_capital = gross_cost_poly + gross_cost_pf
+        gross_profit = shares - gross_capital
+        gross_roi = gross_profit / gross_capital if gross_capital > 0 else 0.0
 
         return {
             "shares": shares,
@@ -101,7 +107,7 @@ class ArbitrageCalculator:
             "best_price_leg_2": best_price_pf,
             "gross_profit": gross_profit,
             "net_profit": net_profit,
-            "gross_roi": net_roi,
+            "gross_roi": gross_roi,
             "net_roi": net_roi,
         }
 

@@ -123,49 +123,36 @@ class IngestionLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_mark_missing_markets_closed_marks_absent_active_market_as_closed(self):
-        missing_market = SimpleNamespace(
-            platform="predict_fun",
-            platform_market_id="9212",
-            status="active",
-            tradable=True,
-            updated_at=None,
-        )
-        present_market = SimpleNamespace(
-            platform="predict_fun",
-            platform_market_id="9213",
-            status="active",
-            tradable=True,
-            updated_at=None,
-        )
+        rows = [
+            (1, "9212"),  # missing — должен быть закрыт
+            (2, "9213"),  # present — должен остаться active
+        ]
 
-        class FakeScalarResult:
-            def __init__(self, items):
-                self._items = items
+        executed_stmts = []
 
-
-            def scalars(self):
-                return self
+        class FakeResult:
+            def __init__(self, data):
+                self._data = data
 
 
             def all(self):
-                return list(self._items)
+                return list(self._data)
 
 
         class FakeDbSession:
             async def execute(self, stmt):
-                return FakeScalarResult([missing_market, present_market])
+                executed_stmts.append(stmt)
+                return FakeResult(rows)
 
 
         service = IngestionService(db_session=FakeDbSession())
-        before = datetime.now(timezone.utc)
 
-        await service._mark_missing_markets_closed("predict_fun", {"9213"})
+        closed_ids = await service._mark_missing_markets_closed("predict_fun", {"9213"})
 
-        self.assertEqual(missing_market.status, "closed")
-        self.assertFalse(missing_market.tradable)
-        self.assertGreaterEqual(missing_market.updated_at, before)
-        self.assertEqual(present_market.status, "active")
-        self.assertTrue(present_market.tradable)
+        # id=1 (platform_market_id="9212") отсутствует в seen → должен быть закрыт
+        self.assertEqual(closed_ids, {1})
+        # SELECT + UPDATE должны быть вызваны
+        self.assertEqual(len(executed_stmts), 2)
 
 
     async def test_sync_markets_skips_full_resync_within_interval(self):
