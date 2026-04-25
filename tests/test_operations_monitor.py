@@ -125,7 +125,7 @@ class OperationsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered["deliverable_opportunities"], 2)
 
 
-    async def test_telegram_connectivity_alerts_and_recovers(self):
+    async def test_telegram_connectivity_updates_stats_and_recovers_without_telegram_notifications(self):
         with patch(
             "arbitrage_bot.services.operations_monitor.send_system_notification",
             new=AsyncMock(return_value=True),
@@ -135,11 +135,15 @@ class OperationsMonitorTests(unittest.IsolatedAsyncioTestCase):
             )
             first_failure_at = operations_monitor._telegram_state["first_failure_at"]
             await operations_monitor.evaluate_telegram_connectivity(now=first_failure_at + 181.0)
+            degraded = operations_monitor.snapshot_monitor_state()["telegram_polling"]
             await operations_monitor.evaluate_telegram_connectivity(now=first_failure_at + 241.0)
 
-        self.assertEqual(send_mock.await_count, 2)
-        self.assertEqual(send_mock.await_args_list[0].kwargs["level"], "warning")
-        self.assertEqual(send_mock.await_args_list[1].kwargs["level"], "recovery")
+        recovered = operations_monitor.snapshot_monitor_state()["telegram_polling"]
+        send_mock.assert_not_awaited()
+        self.assertEqual(degraded["severity"], "warning")
+        self.assertTrue(degraded["outage_detected"])
+        self.assertEqual(recovered["severity"], "ok")
+        self.assertFalse(recovered["outage_detected"])
 
 
     async def test_telegram_connectivity_ignores_request_timeout_failures(self):
@@ -157,7 +161,7 @@ class OperationsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(operations_monitor._telegram_state["last_failure_at"])
 
 
-    async def test_telegram_connectivity_sends_only_recovery_when_warning_delivery_failed(self):
+    async def test_telegram_connectivity_transitions_state_without_notifications(self):
         with patch(
             "arbitrage_bot.services.operations_monitor.send_system_notification",
             new=AsyncMock(side_effect=[False, True]),
@@ -168,14 +172,12 @@ class OperationsMonitorTests(unittest.IsolatedAsyncioTestCase):
             first_failure_at = operations_monitor._telegram_state["first_failure_at"]
             await operations_monitor.evaluate_telegram_connectivity(now=first_failure_at + 181.0)
 
-            self.assertFalse(operations_monitor._telegram_state["active"])
+            self.assertTrue(operations_monitor._telegram_state["active"])
             self.assertTrue(operations_monitor._telegram_state["outage_detected"])
 
             await operations_monitor.evaluate_telegram_connectivity(now=first_failure_at + 241.0)
 
-        self.assertEqual(send_mock.await_count, 2)
-        self.assertEqual(send_mock.await_args_list[0].kwargs["level"], "warning")
-        self.assertEqual(send_mock.await_args_list[1].kwargs["level"], "recovery")
+        send_mock.assert_not_awaited()
         self.assertFalse(operations_monitor._telegram_state["active"])
         self.assertFalse(operations_monitor._telegram_state["outage_detected"])
         self.assertIsNone(operations_monitor._telegram_state["first_failure_at"])

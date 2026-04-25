@@ -607,4 +607,17 @@ def _format_admin_stats_text(stats):
             f"streak={int(deliverable.get('streak') or 0)}"
         )
 
+        telegram_polling = monitor.get("telegram_polling") or {}
+        telegram_severity = telegram_polling.get("severity") or "ok"
+        first_failure_seconds_ago = telegram_polling.get("first_failure_seconds_ago")
+        last_failure_seconds_ago = telegram_polling.get("last_failure_seconds_ago")
+        if first_failure_seconds_ago is None:
+            lines.append("• Telegram polling: ok")
+        else:
+            lines.append(
+                f"• Telegram polling: {telegram_severity}, "
+                f"failing_for={int(first_failure_seconds_ago)}s, "
+                f"last_failure={int(last_failure_seconds_ago or 0)}s ago"
+            )
+
     return "\n".join(lines)

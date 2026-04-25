@@ -123,6 +123,11 @@ class TelegramBotCommandsTests(unittest.TestCase):
                         "streak": 5,
                         "severity": "warning",
                     },
+                    "telegram_polling": {
+                        "severity": "warning",
+                        "first_failure_seconds_ago": 245.0,
+                        "last_failure_seconds_ago": 12.0,
+                    },
                 },
             }
         )
@@ -145,6 +150,7 @@ class TelegramBotCommandsTests(unittest.TestCase):
         self.assertIn("📡 Monitor:", text)
         self.assertIn("• Orderbook coverage: critical, 35.0% (7/20)", text)
         self.assertIn("• Deliverable opportunities: warning, opportunities=1, deliverable=0, streak=5", text)
+        self.assertIn("• Telegram polling: warning, failing_for=245s, last_failure=12s ago", text)
 
 
     def test_build_prompt_keyboard_contains_only_back_button(self):

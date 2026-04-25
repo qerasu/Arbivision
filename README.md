@@ -279,7 +279,7 @@ python3 -m arbitrage_bot.run_telegram
 
 Настройки пользователя защищены whitelist-ом допустимых полей (`ALLOWED_PREFERENCE_FIELDS`). Callback data с неизвестным `field_name` игнорируется на уровне хэндлера, а `set_user_preference` выбрасывает `ValueError` для полей не из whitelist.
 
-Команда `/stats` открывает Telegram-сводку по пользователям, runtime-алертам, причинам fanout/drop и состоянию monitor-проверок `orderbook coverage` / `deliverable opportunities`. Она зарегистрирована в списке команд бота наравне с `/start`, но отдаёт данные только чатам из `TELEGRAM_SYSTEM_ERROR_CHAT_IDS`. Monitor-проверки `orderbook coverage` и `deliverable opportunities`, включая recovery, не отправляют отдельные Telegram-уведомления и доступны только в `/stats`. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
+Команда `/stats` открывает Telegram-сводку по пользователям, runtime-алертам, причинам fanout/drop и состоянию monitor-проверок `orderbook coverage` / `deliverable opportunities` / `telegram polling`. Она зарегистрирована в списке команд бота наравне с `/start`, но отдаёт данные только чатам из `TELEGRAM_SYSTEM_ERROR_CHAT_IDS`. Monitor-проверки `orderbook coverage`, `deliverable opportunities` и `telegram polling`, включая recovery, не отправляют отдельные Telegram-уведомления и доступны только в `/stats`. Для `telegram polling` в окне статистики также показываются текущий severity, длительность сбоя и время последнего failure. Текст этого окна формируется в `arbitrage_bot/tg_bot/handlers.py` в функции `_format_admin_stats_text`.
 
 ## HTTP API
 
@@ -317,4 +317,3 @@ RUN_LIVE_TESTS=1 RUN_LIVE_DB_TESTS=1 python3 utilities/run_tests.py
 - при недоступном Redis часть dedupe/cache логики деградирует мягко, без обязательного падения всего сервиса
 - `TELEGRAM_DEFAULT_CHAT_IDS` и `TELEGRAM_SYSTEM_ERROR_CHAT_IDS` хранятся как `frozenset` для O(1) membership check
 - язык пользователя хранится в `user_preferences.language` и применяется ко всем текстам и кнопкам бота
-- `database_url` экранирует user/password через `urllib.parse.quote_plus`, поэтому спецсимволы в пароле безопасны

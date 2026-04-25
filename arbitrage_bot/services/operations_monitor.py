@@ -63,9 +63,25 @@ def reset_monitor_state():
 
 
 def snapshot_monitor_state():
+    now = monotonic()
+    first_failure_at = _telegram_state["first_failure_at"]
+    last_failure_at = _telegram_state["last_failure_at"]
+    telegram_severity = "ok"
+    if _telegram_state["outage_detected"]:
+        telegram_severity = "warning"
+    elif first_failure_at is not None and last_failure_at is not None:
+        telegram_severity = "degraded"
+
     return {
         "orderbook_coverage": dict(_orderbook_state),
         "deliverable_opportunities": dict(_deliverable_state),
+        "telegram_polling": {
+            "severity": telegram_severity,
+            "active": _telegram_state["active"],
+            "outage_detected": _telegram_state["outage_detected"],
+            "first_failure_seconds_ago": None if first_failure_at is None else max(0.0, now - first_failure_at),
+            "last_failure_seconds_ago": None if last_failure_at is None else max(0.0, now - last_failure_at),
+        },
     }
 
 
@@ -172,31 +188,17 @@ async def evaluate_telegram_connectivity(now=None):
     if not _telegram_state["outage_detected"]:
         if current_time - first_failure_at >= _TELEGRAM_DOWN_THRESHOLD_SECONDS:
             _telegram_state["outage_detected"] = True
-            warning_sent = await send_system_notification(
-                "monitor",
-                "telegram polling",
-                "telegram polling appears down for more than 3 minutes",
-                level="warning",
-            )
-            if warning_sent:
-                _telegram_state["active"] = True
+            _telegram_state["active"] = True
         elif current_time - last_failure_at >= _TELEGRAM_RECOVERY_SECONDS:
             _telegram_state["first_failure_at"] = None
             _telegram_state["last_failure_at"] = None
         return
 
     if current_time - last_failure_at >= _TELEGRAM_RECOVERY_SECONDS:
-        recovery_sent = await send_system_notification(
-            "monitor",
-            "telegram polling",
-            "telegram polling connectivity recovered",
-            level="recovery",
-        )
-        if recovery_sent:
-            _telegram_state["first_failure_at"] = None
-            _telegram_state["last_failure_at"] = None
-            _telegram_state["active"] = False
-            _telegram_state["outage_detected"] = False
+        _telegram_state["first_failure_at"] = None
+        _telegram_state["last_failure_at"] = None
+        _telegram_state["active"] = False
+        _telegram_state["outage_detected"] = False
 
 
 async def _record_orderbook_coverage(active_pairs, pairs_with_books):
