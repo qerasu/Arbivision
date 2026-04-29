@@ -432,7 +432,7 @@ class OrderbookService:
                 if book is None:
                     incr_counter("orderbook.polymarket_book_missing")
                     if not bypass_cache:
-                        # не записываем CACHE_MISS при bypass — он может быть временным
+                        # do not cache CACHE_MISS on bypass — the absence may be transient
                         self._set_cache_value(_polymarket_book_cache, token_id, _CACHE_MISS)
                     continue
                 self._set_cache_value(_polymarket_book_cache, token_id, book)

@@ -10,13 +10,13 @@ from arbitrage_bot.tg_bot.preferences import get_telegram_alert_targets
 
 log = get_logger("fanout_manager")
 
-# глобальный кеш целей доставки — разделяется всеми экземплярами FanoutManager
+# module-level delivery targets cache shared across all FanoutManager instances
 _delivery_targets_cache = None
 _delivery_targets_cache_expires_at = 0.0
 
 
 class FanoutManager:
-    # class-level aliases для совместимости с setUp в тестах
+    # class-level aliases for setUp compatibility in tests
     @property
     def _cache_value(self):
         return _delivery_targets_cache
@@ -44,7 +44,7 @@ class FanoutManager:
 
 
     async def process_pending_opportunities(self, limit=50):
-        # в in-memory режиме (один процесс) pending-очередь не используется
+        # in-memory mode (single process): pending queue is not used
         return 0
 
 

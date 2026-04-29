@@ -59,10 +59,7 @@ class AlertManager:
         if not dedupe_key or state_to_save is None:
             return
 
-        try:
-            redis = get_redis()
-        except Exception:
-            redis = None
+        redis = get_redis()
         await self._store_dedupe_state(redis, dedupe_key, state_to_save)
         self._clear_dedupe_state(opportunity)
 

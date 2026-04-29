@@ -430,8 +430,6 @@ class IngestionService:
         if not items:
             return set()
 
-        items, _, _ = self._dedupe_market_items(items)
-
         if self._supports_postgresql_upsert():
             return await self._upsert_markets_postgresql(items)
 
@@ -618,7 +616,7 @@ class IngestionService:
         if not platform:
             return set()
 
-        # загружаем только id и platform_market_id — без полных ORM-объектов
+        # fetch only id and platform_market_id — skip full ORM objects
         stmt = select(Market.id, Market.platform_market_id).where(
             Market.platform == platform,
             Market.status == "active",

@@ -130,7 +130,7 @@ def _should_skip_notification(dedupe_key):
 
     _last_sent_at[dedupe_key] = now
 
-    # сначала выгоняем записи с истёкшим TTL, затем — по старшинству если всё ещё много
+    # first evict expired entries, then evict oldest if still over limit
     if len(_last_sent_at) > _MAX_DEDUPE_ENTRIES:
         expired = [k for k, t in _last_sent_at.items() if now - t >= cooldown]
         for k in expired:

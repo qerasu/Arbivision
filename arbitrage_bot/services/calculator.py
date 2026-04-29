@@ -91,7 +91,7 @@ class ArbitrageCalculator:
         avg_price_pf = cost_pf / shares
         net_roi = net_profit / capital if capital > 0 else 0.0
 
-        # gross — без учёта комиссий (fee — константный множитель, делим обратно)
+        # gross — excluding fees (fee is a constant multiplier, divide back out)
         gross_cost_poly = cost_poly / (1.0 + self.fee_poly)
         gross_cost_pf = cost_pf / (1.0 + self.fee_pf)
         gross_capital = gross_cost_poly + gross_cost_pf

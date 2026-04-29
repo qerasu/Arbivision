@@ -261,23 +261,15 @@ async def _cleanup_database_records(db, state):
         for pair_hash in stale_pair_hashes:
             await _clear_empty_count(pair_hash, state)
 
-    referenced_market_ids_stmt = select(MarketPair.market_id_a).union(
+    # use subquery instead of loading all referenced ids into memory
+    referenced_subquery = select(MarketPair.market_id_a).union(
         select(MarketPair.market_id_b)
     )
-    
-    referenced_market_rows = (await db.execute(referenced_market_ids_stmt)).all()
-    referenced_market_ids = {
-        market_id
-        for market_id, in referenced_market_rows
-        if market_id is not None
-    }
-
     closed_markets_stmt = select(Market.id).where(
         Market.status != "active",
         Market.updated_at < cutoff,
+        ~Market.id.in_(referenced_subquery),
     )
-    if referenced_market_ids:
-        closed_markets_stmt = closed_markets_stmt.where(~Market.id.in_(referenced_market_ids))
     stale_market_rows = (await db.execute(closed_markets_stmt)).all()
     stale_market_ids = [market_id for market_id, in stale_market_rows]
 
@@ -360,26 +352,28 @@ async def _upsert_market_pairs(db, matcher, changed_market_ids_by_platform, stat
         poly_signatures = _build_cached_market_signatures(poly_changed, matcher, state)
         pf_signatures = _build_cached_market_signatures(pf_markets, matcher, state)
         pf_index = _build_candidate_index_from_signatures(pf_signatures)
-        reached_limit = _match_changed_polymarket_markets(
+        reached_limit = _match_changed_markets(
             poly_changed,
             poly_signatures,
             pf_index,
             matcher,
             matched_pairs,
             pair_limit,
+            poly_is_source=True,
         )
 
     if pf_changed and poly_markets and not reached_limit:
         pf_signatures = _build_cached_market_signatures(pf_changed, matcher, state)
         poly_signatures = _build_cached_market_signatures(poly_markets, matcher, state)
         poly_index = _build_candidate_index_from_signatures(poly_signatures)
-        _match_changed_predict_fun_markets(
+        _match_changed_markets(
             pf_changed,
             pf_signatures,
             poly_index,
             matcher,
             matched_pairs,
             pair_limit,
+            poly_is_source=False,
         )
 
     if full_rematch:
@@ -431,8 +425,8 @@ async def _load_pairs_for_market_ids(db, market_ids):
     if not market_ids:
         return []
 
-    # postgresql ограничивает количество параметров запроса до 32767,
-    # два IN-клауза удваивают число, поэтому батчим по 10000
+    # postgresql caps query parameters at 32767;
+    # two IN-clauses double the count, so batch by 10000
     batch_size = 10000
     market_id_list = list(market_ids)
     all_pairs = []
@@ -451,7 +445,7 @@ async def _load_pairs_for_market_ids(db, market_ids):
     return all_pairs
 
 
-def _match_changed_polymarket_markets(changed_markets, changed_signatures, candidate_index, matcher, matched_pairs, pair_limit):
+def _match_changed_markets(changed_markets, changed_signatures, candidate_index, matcher, matched_pairs, pair_limit, poly_is_source):
     reached_limit = False
 
     for market in changed_markets:
@@ -465,41 +459,20 @@ def _match_changed_polymarket_markets(changed_markets, changed_signatures, candi
             matcher,
             candidate_index,
         ):
-            pair = matcher.match_candidates(
-                market,
-                candidate_signature["market"],
-                poly_signature=market_signature,
-                pf_signature=candidate_signature,
-            )
-            if pair:
-                matched_pairs[pair.pair_hash] = pair
-            if pair_limit and len(matched_pairs) >= pair_limit:
-                reached_limit = True
-                break
-
-    return reached_limit
-
-
-def _match_changed_predict_fun_markets(changed_markets, changed_signatures, candidate_index, matcher, matched_pairs, pair_limit):
-    reached_limit = False
-
-    for market in changed_markets:
-        if reached_limit:
-            break
-        market_signature = changed_signatures.get(market.id)
-        if market_signature is None:
-            continue
-        for candidate_signature in _candidate_markets_for_signature(
-            market_signature,
-            matcher,
-            candidate_index,
-        ):
-            pair = matcher.match_candidates(
-                candidate_signature["market"],
-                market,
-                poly_signature=candidate_signature,
-                pf_signature=market_signature,
-            )
+            if poly_is_source:
+                pair = matcher.match_candidates(
+                    market,
+                    candidate_signature["market"],
+                    poly_signature=market_signature,
+                    pf_signature=candidate_signature,
+                )
+            else:
+                pair = matcher.match_candidates(
+                    candidate_signature["market"],
+                    market,
+                    poly_signature=candidate_signature,
+                    pf_signature=market_signature,
+                )
             if pair:
                 matched_pairs[pair.pair_hash] = pair
             if pair_limit and len(matched_pairs) >= pair_limit:
@@ -866,6 +839,8 @@ def _build_cached_market_signatures(markets, matcher, state):
         cached_entry = state.market_signature_cache.get(market.id)
         if cached_entry is not None and cached_entry["fingerprint"] == fingerprint:
             cached_entry["last_seen_at"] = time.monotonic()
+            # mutating market snapshot in the cached entry is safe because
+            # the fingerprint covers all content-bearing fields (title, outcomes, raw_payload, etc.)
             cached_entry["signature"]["market"] = market_snapshot
             signatures[market.id] = cached_entry["signature"]
             continue
@@ -940,8 +915,8 @@ async def _get_empty_counts(pair_hashes, state):
                 pair_hash: int(value or 0)
                 for pair_hash, value in zip(pair_hashes, values)
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("redis empty count fetch failed", error=str(exc))
 
     counts = {}
     for pair_hash in pair_hashes:
@@ -951,15 +926,8 @@ async def _get_empty_counts(pair_hashes, state):
     return counts
 
 
-async def _get_empty_count_client():
-    try:
-        redis = get_redis()
-        if redis is not None:
-            return redis
-    except Exception:
-        pass
-
-    return None
+def _get_empty_count_client():
+    return get_redis()
 
 
 async def _clear_empty_count(pair_hash, state):
@@ -984,8 +952,8 @@ async def _increment_empty_count(pair_hash, state):
             pipe.expire(key, _EMPTY_COUNT_TTL_SECONDS)
             results = await pipe.execute()
             return int(results[0])
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("redis increment empty count failed", error=str(exc))
     entry = state.pair_empty_counts.get(pair_hash)
     count = (int(entry[0]) if entry else 0) + 1
     state.pair_empty_counts[pair_hash] = (count, now)
@@ -1078,7 +1046,7 @@ def _pair_cycle_priority(pair, market_map):
 
 
 async def _update_empty_counts(checked_pairs, pairs_with_data, state):
-    redis = await _get_empty_count_client()
+    redis = _get_empty_count_client()
     if redis is not None:
         try:
             pipe = redis.pipeline()

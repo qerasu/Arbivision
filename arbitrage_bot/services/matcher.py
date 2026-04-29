@@ -261,6 +261,7 @@ class MatcherService:
             outcome_mapping,
             score,
             participant_score,
+            title_score=title_score,
         ):
             return self._build_rejection(
                 poly_market,
@@ -289,7 +290,7 @@ class MatcherService:
         }
 
 
-    def _should_auto_approve(self, poly_words, pf_words, poly_signature, pf_signature, outcome_mapping, score, participant_score):
+    def _should_auto_approve(self, poly_words, pf_words, poly_signature, pf_signature, outcome_mapping, score, participant_score, title_score=None):
         if not outcome_mapping:
             return False
 
@@ -307,9 +308,12 @@ class MatcherService:
             return True
 
         # non-matchup: require minimum title overlap alongside participant score
-        intersection = len(poly_words & pf_words)
-        union = len(poly_words | pf_words)
-        title_jaccard = intersection / union if union else 0.0
+        if title_score is not None:
+            title_jaccard = title_score
+        else:
+            intersection = len(poly_words & pf_words)
+            union = len(poly_words | pf_words)
+            title_jaccard = intersection / union if union else 0.0
 
         if (
             participant_score >= 0.95
@@ -675,8 +679,9 @@ class MatcherService:
         return "generic"
 
 
-    def _detect_market_variant(self, market):
-        haystack = self._market_context_haystack(market)
+    def _detect_market_variant(self, market, haystack=None):
+        if haystack is None:
+            haystack = self._market_context_haystack(market)
 
         if any(token in haystack for token in ("spread", "handicap", "run line", "puck line")):
             return "spread"
@@ -705,8 +710,9 @@ class MatcherService:
         return self.normalizer.normalize_text(" ".join(str(part) for part in parts if part))
 
 
-    def _detect_market_scope(self, market):
-        haystack = self._market_context_haystack(market)
+    def _detect_market_scope(self, market, haystack=None):
+        if haystack is None:
+            haystack = self._market_context_haystack(market)
 
         if any(
             phrase in haystack
@@ -731,8 +737,9 @@ class MatcherService:
         return "default"
 
 
-    def _detect_event_granularity(self, market):
-        haystack = self._market_context_haystack(market)
+    def _detect_event_granularity(self, market, haystack=None):
+        if haystack is None:
+            haystack = self._market_context_haystack(market)
 
         if any(
             phrase in haystack
@@ -1299,9 +1306,9 @@ class MatcherService:
             "entities": self.normalizer.extract_entities(context_haystack),
             "participants": participants,
             "kind": self._detect_market_kind(market, participants),
-            "variant": self._detect_market_variant(market),
-            "scope": self._detect_market_scope(market),
-            "event_granularity": self._detect_event_granularity(market),
+            "variant": self._detect_market_variant(market, haystack=context_haystack),
+            "scope": self._detect_market_scope(market, haystack=context_haystack),
+            "event_granularity": self._detect_event_granularity(market, haystack=context_haystack),
             "comparison_type": self._detect_comparison_type(market),
         }
 

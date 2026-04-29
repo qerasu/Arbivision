@@ -93,8 +93,8 @@ utilities/
 - worker пишет timing-счётчики стадий `worker.timing.*_ms_total/count` для queue wait, orderbook fetch, calculation, fanout и Telegram send
 - Telegram delivery по нескольким получателям отправляется параллельно с лимитом `TELEGRAM_SEND_CONCURRENCY`
 - в `worker cycle summary` теперь отдельно логируется `deliverable_opportunities`, чтобы не путать найденные opportunities и те, которые прошли fanout-фильтры
-- worker раз в `DB_CLEANUP_INTERVAL_SECONDS` чистит старые `stale/failed market_pairs` и давно закрытые `markets`, которые больше не используются никакими парами
-- текущие дефолты настроены в сторону меньшей задержки: более частый worker-цикл, более частый sync источников, более высокая concurrency для `predict.fun` и более короткие cache/poll интервалы
+- worker раз в `DB_CLEANUP_INTERVAL_SECONDS` чистит старые `stale/failed market_pairs` и давно закрытые `markets`, которые больше не используются никакими парами; cleanup-запрос использует SQL subquery вместо загрузки всех `market_id` в память
+- ошибки Redis в счётчиках пустых ордербуков (`empty count` трекинг) логируются на уровне DEBUG вместо молчаливого игнорирования; при недоступном Redis функция деградирует в in-memory fallback
 - сетевые сбои `predict.fun` по orderbook теперь логируются агрегированно на батч, чтобы не зашумлять логи warning-ами по каждому market id
 
 ## Быстрый старт для разработки
@@ -317,3 +317,4 @@ RUN_LIVE_TESTS=1 RUN_LIVE_DB_TESTS=1 python3 utilities/run_tests.py
 - при недоступном Redis часть dedupe/cache логики деградирует мягко, без обязательного падения всего сервиса
 - `TELEGRAM_DEFAULT_CHAT_IDS` и `TELEGRAM_SYSTEM_ERROR_CHAT_IDS` хранятся как `frozenset` для O(1) membership check
 - язык пользователя хранится в `user_preferences.language` и применяется ко всем текстам и кнопкам бота
+- `MatcherService.build_market_signature` вычисляет context haystack один раз и передаёт его во все внутренние `_detect_*` методы, чтобы избежать повторной нормализации одного и того же текста; аналогично `title_score` вычисляется один раз в `explain_match` и передаётся в `_should_auto_approve`
